@@ -139,9 +139,9 @@ cat > "$CLEAN_TICKS" <<'EOF'
     {
       "symbol": "BIOX",
       "bid": 15.00,
-      "ask": 15.05,
-      "last": 15.02,
-      "vwap_5m": 14.90,
+      "ask": 15.02,
+      "last": 14.98,
+      "vwap_5m": 15.02,
       "rel_volume": 0.6,
       "halted": false,
       "premarket": false,
