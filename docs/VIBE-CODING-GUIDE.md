@@ -59,7 +59,7 @@
    - Verify gate combinations
    - Check reason logging completeness
 
-### Post-Session (5 min)
+### Post-Session (5-10 min)
 1. **Document Evidence** in session markdown:
    - Commands run
    - Expected vs actual output
@@ -67,9 +67,45 @@
    - Verdict (SUCCESS/BLOCKED/PARTIAL)
 
 2. **Update TODO.md**:
-   - Move completed items to "Done"
+   - Move completed items to "Done" with date
    - Add discovered work to "Next"
    - Update "Now" for next session
+
+3. **Git Operations**:
+   ```bash
+   # Stage all changes
+   git add .
+   
+   # Commit with session summary
+   git commit -m "$(cat <<'EOF'
+   Complete Session N: [Theme]
+   
+   - [Key change 1]
+   - [Key change 2] 
+   - [Key change 3]
+   
+   All tests pass, ready for Session N+1
+   
+   🤖 Generated with [Claude Code](https://claude.ai/code)
+   
+   Co-Authored-By: Claude <noreply@anthropic.com>
+   EOF
+   )"
+   
+   # Push to remote
+   git push origin main
+   ```
+
+4. **Update Next Session Plan**:
+   ```bash
+   # Update docs/NEXT-SESSION-PLAN.md for next session
+   # Include theme, acceptance criteria, files to modify, success pattern
+   ```
+
+5. **Session Handoff**:
+   - Ensure all session artifacts are committed
+   - Update CLAUDE.md if architecture changed
+   - Next session is clearly defined in TODO.md
 
 ## Session Templates by Type
 

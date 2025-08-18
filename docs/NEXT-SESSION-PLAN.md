@@ -1,7 +1,7 @@
-# Next Session Plan: Session 5
+# Next Session Plan: Session 6
 
 ## Session Theme
-**"Add earnings embargo gate"**
+**"Paper order outbox + idempotency (mock fills)"**
 
 ## Pre-Session Checklist (5 min)
 ```bash
@@ -9,154 +9,136 @@
 make doctor && make test
 
 # 2. Create session card
-scripts/new-session.sh "Add earnings embargo gate"
+scripts/new-session.sh "Paper order outbox + idempotency (mock fills)"
 
 # 3. Review current status
 cat docs/TODO.md
 ```
 
-## Session 5 Acceptance Criteria
-**"Symbol within earnings embargo window → REJECT with earnings_embargo gate"**
+## Session 6 Acceptance Criteria
+**"BUY/SELL decisions generate persistent paper orders with mock fills and prevent duplicates on restart"**
 
 ## Planning Phase (10-15 min)
 
 ### Contracts to Touch
-- Add earnings calendar data structure
-- Decision engine earnings embargo gate logic  
-- New gate: `earnings_embargo` (hard gate)
+- Decision output to outbox transformation
+- Paper order structure with fill simulation
+- Idempotency tracking mechanism
 
 ### Files to Modify
-1. **`internal/config/config.go`**:
-   - Add EarningsEmbargo config struct
-   - Configure embargo window (hours before/after)
+1. **`internal/outbox/`** (create new package):
+   - `outbox.go` - Core outbox pattern implementation
+   - `fills.go` - Mock fill generation with realistic latency/slippage
+   - `persistence.go` - JSON file-based storage for paper mode
 
-2. **`fixtures/earnings_calendar.json`** (create new):
-   - Earnings schedule with symbol, time, confirmed status
-   - Test cases for active/upcoming/past earnings
+2. **`cmd/decision/main.go`**:
+   - Integration with outbox after decision evaluation
+   - Idempotency checks on startup
+   - Paper order lifecycle management
 
-3. **`internal/decision/engine.go`**:
-   - Add earnings embargo gate logic (hard gate → REJECT)
-   - Include earnings context in decision reason
+3. **`fixtures/outbox_test.json`** (create new):
+   - Test scenarios for outbox behavior
+   - Mock fill generation test cases
+   - Idempotency verification data
 
-4. **`cmd/decision/main.go`**:
-   - Load and parse earnings calendar fixture
-   - Pass earnings state to decision engine
-
-5. **`scripts/run-tests.sh`**:
-   - Add Session 5 test case with earnings embargo
-   - Assert symbols in embargo are REJECTED
+4. **`scripts/run-tests.sh`**:
+   - Add Session 6 test case with paper order generation
+   - Assert outbox persistence and fill simulation
+   - Verify no duplicate orders on restart
 
 ### Success Evidence Pattern
 ```bash
-# Test case with symbol in earnings embargo
-go run ./cmd/decision -config config/config.yaml -oneshot=true | grep '"event":"decision"'
-# Expected: intent REJECT, gates_blocked includes "earnings_embargo"
+# Test case: Decision generates paper order
+go run ./cmd/decision -oneshot=true | grep '"event":"paper_order"'
+# Expected: BUY decisions create outbox entries with order IDs
 
-# Test case with symbol outside embargo
-# Expected: normal BUY/HOLD behavior
+# Test case: Mock fills generated
+# Expected: Paper orders get filled with realistic timestamps and prices
+
+# Test case: Restart idempotency
+# Expected: Restarting doesn't duplicate existing orders
 ```
 
 ## Implementation Phase (30-50 min)
 
 ### Core Logic
-1. **Add earnings embargo config** in `internal/config/config.go`
-2. **Create earnings calendar fixture** with test data
-3. **Implement earnings embargo gate** in decision engine (hard gate)
-4. **Load earnings data** in main.go and pass to decision engine
-5. **Update test suite** with earnings embargo test case
+1. **Create outbox package** for transactional order persistence
+2. **Implement mock fill engine** with realistic market simulation
+3. **Add idempotency layer** to prevent duplicate order execution
+4. **Integrate with decision pipeline** to capture BUY/SELL intents
+5. **Update test suite** with outbox and fill scenarios
 
-### Step 1: Configuration & Data
+### Step 1: Outbox Package Structure
 ```go
-// internal/config/config.go
-type EarningsEmbargo struct {
-    Enabled     bool `yaml:"enabled"`
-    HoursBefore int  `yaml:"hours_before"` // e.g. 2
-    HoursAfter  int  `yaml:"hours_after"`  // e.g. 1
+// internal/outbox/outbox.go
+type PaperOrder struct {
+    ID          string    `json:"id"`
+    Symbol      string    `json:"symbol"`
+    Intent      string    `json:"intent"`      // BUY_1X, BUY_5X, REDUCE
+    Quantity    float64   `json:"quantity"`    // shares
+    Price       float64   `json:"price"`       // limit price
+    Status      string    `json:"status"`      // PENDING, FILLED, REJECTED
+    CreatedAt   time.Time `json:"created_at"`
+    FilledAt    *time.Time `json:"filled_at,omitempty"`
+    FillPrice   *float64  `json:"fill_price,omitempty"`
+    ReasonJSON  string    `json:"reason_json"` // decision reason
+}
+
+type Outbox interface {
+    Store(order PaperOrder) error
+    GetPending() ([]PaperOrder, error) 
+    MarkFilled(id string, fillPrice float64) error
 }
 ```
 
-### Step 2: Earnings Calendar Fixture
-```json
-// fixtures/earnings_calendar.json
-{
-  "earnings": [
-    {
-      "symbol": "AAPL",
-      "earnings_time_utc": "2025-08-17T21:00:00Z",
-      "confirmed": true
-    }
-  ]
-}
-```
-
-### Step 3: Embargo Gate Logic
+### Step 2: Mock Fill Engine
 ```go
-// In Evaluate() function
-if isInEarningsEmbargo(symbol, earningsCalendar, cfg.EarningsEmbargo, now) {
-    reason.GatesBlocked = append(reason.GatesBlocked, "earnings_embargo")
-    // Add earnings context to reason
+// internal/outbox/fills.go
+type MockFillEngine struct {
+    Latency time.Duration  // 100ms-2s random
+    Slippage float64       // 0.01-0.05% random slippage
 }
+
+func (m *MockFillEngine) SimulateFill(order PaperOrder) (float64, time.Duration)
 ```
+
+### Step 3: Integration Points
+- Decision engine output → Paper order creation
+- Order lifecycle → Fill simulation → Completion
+- Startup → Load pending orders → Resume processing
+
+### Key Safety Rails
+- Only in `trading_mode: paper`
+- All orders tagged with decision session ID
+- Outbox file location configurable
+- Orders include full decision reasoning for audit
 
 ## Validation Phase (10-15 min)
 
-### End-to-End Test
-```bash
-make test  # All 5 cases should pass now
+### End-to-End Tests
+1. **Case 6A - Order Generation**: BUY decision creates paper order in outbox
+2. **Case 6B - Fill Simulation**: Pending orders get filled with mock data  
+3. **Case 6C - Idempotency**: Restart doesn't create duplicate orders
+4. **Case 6D - Order Lifecycle**: Complete flow from decision to fill
 
-# Manual verification with earnings embargo fixture
-go run ./cmd/decision -config config/config.yaml -oneshot=true
-```
+### Edge Cases to Cover
+- Empty outbox on first run
+- Corrupt outbox file recovery
+- Fill engine timing variations
+- Order ID uniqueness across restarts
 
-### Expected Output
-```json
-{
-  "symbol": "AAPL",
-  "intent": "REJECT", 
-  "reason": {
-    "gates_blocked": ["earnings_embargo"],
-    "policy": "positive>=0.35; very_positive>=0.65",
-    "earnings_embargo": {
-      "earnings_time": "2025-08-17T21:00:00Z",
-      "embargo_start": "2025-08-17T19:00:00Z",
-      "embargo_end": "2025-08-17T22:00:00Z"
-    },
-    "what_would_change_it": "wait until after earnings embargo period"
-  }
-}
-```
+## Success Metrics
+- ✅ `make test` passes with 6 test cases (5 existing + 1 new outbox case)
+- ✅ BUY decisions generate paper orders with unique IDs
+- ✅ Mock fills generated with realistic latency and slippage
+- ✅ Restart idempotency prevents order duplication
+- ✅ Outbox persists across application restarts
+- ✅ All existing functionality remains intact
 
-### Edge Cases to Test
-- Earnings exactly at embargo boundary
-- Multiple symbols with different earnings times
-- Unconfirmed earnings (should not trigger embargo)
-- Past earnings (should not block)
-- Future earnings outside embargo window
+## Post-Session Actions
+1. Document outbox evidence in session markdown
+2. Update TODO.md with Session 6 completion
+3. Git commit and push changes
+4. Update NEXT-SESSION-PLAN.md for Session 7 (Wire stub ingestion loop)
 
-## Post-Session (5 min)
-
-### Update Session Documentation
-Fill in `docs/sessions/session-YYYY-MM-DD-XX.md` with:
-- Commands run and output
-- Evidence of earnings embargo behavior
-- Verdict: SUCCESS/BLOCKED/PARTIAL
-
-### Update TODO.md
-```markdown
-## Done (add to list)
-- [x] Session 5: Earnings embargo gate (2025-08-17)
-
-## Next (promote from Later if needed) 
-- [ ] Session 6: Transactional paper outbox with mock fills
-- [ ] Session 7: Wire stub ingestion loop (HTTP/WebSocket)
-```
-
-## Session 5 Success Criteria
-- [ ] `make test` passes with 5 test cases
-- [ ] Symbols in earnings embargo properly REJECTED with "earnings_embargo" gate
-- [ ] Embargo window timing logic works correctly (hours before/after)
-- [ ] Decision reasons include earnings temporal context
-- [ ] No regressions on existing functionality (Sessions 1-4)
-- [ ] Session documented with evidence
-
-**Ready to start Session 5? Run the pre-session checklist above!**
+**Ready to start Session 6? Run the pre-session checklist above!**
