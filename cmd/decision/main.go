@@ -79,20 +79,20 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v (did you copy config.example.yaml?)", err)
 	}
+
+	// Apply environment variable overrides
+	if os.Getenv("GLOBAL_PAUSE") != "" {
+		cfg.GlobalPause = os.Getenv("GLOBAL_PAUSE") == "true"
+	}
+	if os.Getenv("TRADING_MODE") != "" {
+		cfg.TradingMode = os.Getenv("TRADING_MODE")
+	}
+
 	observ.Log("startup", map[string]any{
 		"trading_mode": cfg.TradingMode,
 		"global_pause": cfg.GlobalPause,
 	})
 
-	// metrics server
-	go func() {
-		mux := http.NewServeMux()
-		mux.Handle("/metrics", observ.Handler())
-		mux.Handle("/health", observ.Health())
-		addr := ":8090"
-		observ.Log("metrics_listen", map[string]any{"addr": addr})
-		_ = http.ListenAndServe(addr, mux)
-	}()
 
 	// Load core fixtures (Session 2 uses fixtures as the "ingestion")
 	var hf haltsFile
