@@ -1,9 +1,9 @@
 {
   "news": [
     {
-      "id": "bw-500",
+      "id": "bw-300",
       "provider": "businesswire",
-      "published_at_utc": "2025-08-17T16:04:00Z",
+      "published_at_utc": "2025-08-18T00:35:00Z",
       "headline": "BioX Reports Strong Phase 2 Efficacy Results",
       "body": "Company-issued press release claims positive efficacy.",
       "urls": ["https://example.com/biox-pr"],
@@ -11,22 +11,8 @@
       "is_press_release": true,
       "is_correction": false,
       "supersedes_id": null,
-      "source_weight": 0.4,
-      "headline_hash": "pr-biox-4"
-    },
-    {
-      "id": "reuters-400",
-      "provider": "reuters",
-      "published_at_utc": "2025-08-17T17:25:00Z",
-      "headline": "Editors: BioX Phase 2 signals promising but needs Phase 3",
-      "body": "Independent editorial coverage citing external analysts.",
-      "urls": ["https://example.com/biox-editorial"],
-      "tickers": ["BIOX"],
-      "is_press_release": false,
-      "is_correction": false,
-      "supersedes_id": null,
-      "source_weight": 1.0,
-      "headline_hash": "ed-biox-3"
+      "source_weight": 1.2,
+      "headline_hash": "pr-biox-2"
     }
   ]
 }
