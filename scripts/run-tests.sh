@@ -19,6 +19,8 @@ run_case () {
   local jsonl="$TMP_DIR/$name.jsonl"
 
   # Run the binary; ensure it exits (uses -oneshot=true by default)
+  # Clear environment variables to allow config file control
+  unset GLOBAL_PAUSE TRADING_MODE
   $BIN -config "$cfgfile" 2>"$TMP_DIR/$name.stderr" >"$out" || {
     echo "binary exited non-zero. stderr:"; cat "$TMP_DIR/$name.stderr"; exit 1;
   }
@@ -53,7 +55,7 @@ nvda_intent=$(jq -r 'select(.event=="decision" and .symbol=="NVDA") | .intent' "
 # --- Case 2: resumed (global_pause=false) ---
 RESUMED="$TMP_DIR/config.resumed.yaml"
 # flip the global_pause line; keep a backup with sed if needed
-awk 'BEGIN{done=0} { if (!done && $0 ~ /^[[:space:]]*global_pause:/){ sub(/true/,"false"); done=1 } print }' "$CFG" > "$RESUMED"
+sed 's/global_pause: true/global_pause: false/' "$CFG" > "$RESUMED"
 
 run_case "resumed" "$RESUMED"
 
@@ -158,8 +160,8 @@ cat > "$EARNINGS_EMBARGO" <<'EOF'
   "earnings": [
     {
       "symbol": "AAPL",
-      "start_utc": "2025-08-18T13:30:00Z",
-      "end_utc": "2025-08-18T14:30:00Z",
+      "start_utc": "2025-08-18T14:00:00Z",
+      "end_utc": "2025-08-18T15:00:00Z",
       "status": "confirmed"
     }
   ]
