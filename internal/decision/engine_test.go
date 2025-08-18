@@ -8,7 +8,7 @@ func TestEvaluate_CollectsAllGates(t *testing.T) {
 	feat := Features{Symbol: "NVDA", Halted: true}
 	risk := RiskState{GlobalPause: true}
 
-	act := Evaluate("NVDA", advs, feat, risk, cfg)
+	act := Evaluate("NVDA", advs, feat, risk, cfg, []EarningsEvent{})
 	if act.Intent != "REJECT" {
 		t.Fatalf("want REJECT, got %s", act.Intent)
 	}

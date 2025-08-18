@@ -117,7 +117,7 @@ func main() {
 			feat.Halted = h
 		}
 
-		act := decision.Evaluate(sym, advBySym[sym], feat, risk, cfg)
+		act := decision.Evaluate(sym, advBySym[sym], feat, risk, cfg, []decision.EarningsEvent{})
 		fmt.Printf("{\"symbol\":\"%s\",\"intent\":\"%s\",\"reason\":%s}\n",
 			sym, act.Intent, act.ReasonJSON)
 	}
