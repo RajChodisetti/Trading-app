@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package contracts;
+option go_package = "github.com/yourorg/yourapp/contracts;contracts";
+
+// Canonical event & command types for the trading system.
+// Keep these messages small and stable. Backward-compatible changes only.
+
+// --- Market & news ---
+
+message NewsItem {
+  string id = 1;                    // provider id or generated uuid
+  string provider = 2;              // e.g., "reuters", "benzinga", "sec"
+  string published_at_utc = 3;      // ISO-8601 string (UTC)
+  string received_at_utc = 4;       // when we ingested it (UTC)
+  string headline = 5;
+  string body = 6;
+  repeated string urls = 7;
+  repeated string tickers = 8;      // canonical symbols
+  string cik = 9;                   // optional SEC CIK
+  bool is_press_release = 10;
+  bool is_correction = 11;
+  string supersedes_id = 12;        // id of corrected item
+  double source_weight = 13;        // 0.0..1.0 trust weight at ingestion
+  string headline_hash = 14;        // for dedupe windowing
+}
+
+message MarketTick {
+  string ts_utc = 1;                // ISO-8601 string (UTC)
+  string symbol = 2;
+  double bid = 3;
+  double ask = 4;
+  double last = 5;
+  double vwap_1m = 6;
+  double vwap_5m = 7;
+  double vwap_30m = 8;
+  double rel_volume = 9;
+  double realized_vol = 10;
+  bool halted = 11;
+  bool premarket = 12;
+  bool postmarket = 13;
+  bool ssr_active = 14;
+}
+
+// --- Strategy outputs ---
+
+message Advice {
+  string symbol = 1;
+  double score = 2;                 // -1..1
+  double confidence = 3;            // 0..1
+  repeated string tags = 4;
+  string rationale = 5;
+  string strategy = 6;              // e.g., "SentimentV2"
+  string version = 7;               // e.g., "2.3.1"
+  int32 ttl_s = 8;                  // time to live in seconds
+}
+
+// --- Decision outputs ---
+
+message ProposedAction {
+  string symbol = 1;
+  string intent = 2;                // BUY_1X | BUY_5X | REDUCE | HOLD | SKIP
+  double fused_score = 3;           // post-fusion score [-1..1]
+  double base_amount_usd = 4;       // X
+  double scaled_notional = 5;       // after volatility/liquidity/risk scaling
+  string reason_json = 6;           // structured, stringified explanation
+}
+
+// --- Orders & executions ---
+
+message Order {
+  string id = 1;                    // internal id (uuid)
+  string client_order_id = 2;       // idempotency key visible to broker
+  string symbol = 3;
+  string side = 4;                  // BUY | SELL
+  string type = 5;                  // MKT | LMT | IOC | etc.
+  double qty = 6;
+  double notional = 7;              // optional
+  string status = 8;                // NEW|SENT|PARTIAL|FILLED|CANCELED|REJECTED
+  string created_at_utc = 9;
+}
+
+message Execution {
+  string order_id = 1;
+  double fill_qty = 2;
+  double avg_price = 3;
+  string ts_utc = 4;
+}
+
+// --- Risk state & controls ---
+
+message RiskState {
+  bool global_pause = 1;            // kill switch
+  repeated string frozen_symbols = 2;
+}

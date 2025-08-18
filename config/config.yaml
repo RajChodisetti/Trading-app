@@ -1,0 +1,52 @@
+# config/config.example.yaml
+# Copy to config.yaml and adjust as needed.
+
+trading_mode: paper          # paper | live | dry-run
+global_pause: true           # kill switch for all new orders
+
+thresholds:
+  positive: 0.35
+  very_positive: 0.65
+
+risk:
+  per_symbol_cap_nav_pct: 5
+  per_order_max_usd: 25000
+  daily_new_exposure_cap_nav_pct: 15
+  stop_loss_pct: 6
+  daily_drawdown_pause_nav_pct: 3
+  cooldown_minutes: 5
+
+corroboration:
+  require_positive_pr: true
+  window_seconds: 900        # 15 minutes
+
+earnings:
+  enabled: true
+  block_on_estimated: false   # if true, treat estimated like confirmed
+  minutes_before: 30          # optional pre-window
+  minutes_after: 30           # optional post-window
+
+liquidity:
+  target_realized_vol_5m: 0.015
+  max_spread_bps: 30
+
+session:
+  block_first_minutes: 5
+  block_last_minutes: 5
+  allow_after_hours: false
+  block_premarket: true
+  block_postmarket: true
+
+
+adapters:
+  NEWS_FEED: stub            # later: benzinga|reuters|custom
+  QUOTES: sim                # later: polygon|broker
+  HALTS: sim                 # later: nasdaq|nyse
+  SENTIMENT: stub            # later: finbert|vendor
+  BROKER: paper              # later: alpaca|ibkr
+  ALERTS: stdout             # later: slack|email
+
+# alert sinks (example)
+alerts:
+  slack_webhook_url: ""      # set in secrets manager or env
+  email_recipients: []       # e.g., ["ops@example.com"]

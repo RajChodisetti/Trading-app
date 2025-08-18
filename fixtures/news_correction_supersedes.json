@@ -1,0 +1,32 @@
+{
+  "news": [
+    {
+      "id": "reuters-010",
+      "provider": "reuters",
+      "published_at_utc": "2025-08-16T16:05:00Z",
+      "headline": "MegaTech beats forecasts; raises outlook",
+      "body": "Initial report indicates a beat and raised guidance.",
+      "urls": ["https://example.com/megatech-beat"],
+      "tickers": ["MEGA"],
+      "is_press_release": false,
+      "is_correction": false,
+      "supersedes_id": null,
+      "source_weight": 1.0,
+      "headline_hash": "h3"
+    },
+    {
+      "id": "reuters-010-corr",
+      "provider": "reuters",
+      "published_at_utc": "2025-08-16T16:07:30Z",
+      "headline": "CORRECTION: MegaTech guides lower; shares slip",
+      "body": "Correction: prior headline misstated guidance; company guided lower.",
+      "urls": ["https://example.com/megatech-correction"],
+      "tickers": ["MEGA"],
+      "is_press_release": false,
+      "is_correction": true,
+      "supersedes_id": "reuters-010",
+      "source_weight": 1.0,
+      "headline_hash": "h4"
+    }
+  ]
+}

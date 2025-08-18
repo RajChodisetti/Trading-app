@@ -1,0 +1,28 @@
+{
+  "ticks": [
+    {
+      "ts_utc": "2025-08-16T09:15:00Z",
+      "symbol": "AAPL",
+      "bid": 210.00,
+      "ask": 212.60,
+      "last": 211.30,
+      "vwap_5m": 209.80,
+      "rel_volume": 0.4,
+      "halted": false,
+      "premarket": true,
+      "postmarket": false
+    },
+    {
+      "ts_utc": "2025-08-16T09:15:10Z",
+      "symbol": "AAPL",
+      "bid": 209.90,
+      "ask": 212.40,
+      "last": 211.10,
+      "vwap_5m": 209.90,
+      "rel_volume": 0.5,
+      "halted": false,
+      "premarket": true,
+      "postmarket": false
+    }
+  ]
+}
