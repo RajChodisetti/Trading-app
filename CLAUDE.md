@@ -7,9 +7,9 @@ A trustworthy, low-latency trading backend that reacts to credible market-moving
 ### ✅ Completed (Sessions 1-5)
 - **Decision Engine**: Core gates (global_pause, halt, session, liquidity, corroboration, earnings_embargo) and threshold mapping
 - **Structured Logging**: JSON decision reasons with fused scores and gate details
-- **Testing Framework**: End-to-end integration tests with fixtures
-- **Observability**: Metrics collection and HTTP endpoint
-- **Safety Rails**: Paper mode with global pause protection
+- **Testing Framework**: End-to-end integration tests with 7 comprehensive scenarios (paused, resumed, after_hours, pr_only, pr_plus_editorial, pr_late_editorial, earnings_embargo)
+- **Observability**: Metrics collection and HTTP endpoint with gate-specific counters and decision latency tracking
+- **Safety Rails**: Paper mode with global pause protection, environment variable overrides, and test isolation
 - **PR Corroboration**: Soft gate requiring editorial confirmation within 15-minute window for PR-driven decisions
 - **Earnings Embargo**: Soft gate converting BUY→HOLD during earnings windows with configurable buffers
 
@@ -32,7 +32,7 @@ Each development session follows the "Vibe Coding" protocol (see `docs/VIBE-CODI
 2. **Planning** (10-15 min): Define acceptance criteria, identify contracts/fixtures
 3. **Implementation** (30-50 min): Red-Green-Refactor with evidence collection
 4. **Validation** (10-15 min): End-to-end testing and edge cases
-5. **Post-Session** (5 min): Document evidence, update TODO.md
+5. **Post-Session** (5-10 min): Document evidence, update TODO.md, git commit/push, update next session plan
 
 **Key Principles**:
 - One vertical slice per session
@@ -79,10 +79,10 @@ Environment variables override config.yaml:
 ## Planned Development (Sessions 3+)
 
 ### Next Sessions (Priority Order)
-1. **Session 6**: Transactional paper outbox with mock fills
-3. **Session 7**: Wire stub ingestion loop (HTTP/WebSocket)
-4. **Session 8**: Slack alerts and controls (/pause, /freeze)
-5. **Session 9+**: Real adapter swaps (one at a time)
+1. **Session 6**: Paper order outbox + idempotency (mock fills)
+2. **Session 7**: Wire stub ingestion loop (HTTP/WebSocket/NATS)
+3. **Session 8**: Slack alerts and controls (/pause, /freeze)
+4. **Session 9+**: Real adapter swaps (one at a time)
 
 ### Gate Roadmap
 - ✅ `global_pause`, `halt`, `session`, `liquidity`, `corroboration`, `earnings_embargo`
@@ -90,18 +90,37 @@ Environment variables override config.yaml:
 
 ## Troubleshooting & Operations
 
-### Common Issues
-- **Tests timeout**: Check for hanging `select{}` statements
-- **Null intents in tests**: Verify jq parsing in run-tests.sh
-- **No decisions**: Ensure global_pause=false and check fixtures
+### Common Issues (Recently Fixed)
+- **Tests timeout**: Fixed duplicate metrics server startup in oneshot mode
+- **Environment variable conflicts**: Fixed test script to clear GLOBAL_PAUSE/TRADING_MODE for config file control  
+- **Timing-dependent test failures**: Updated fixture timestamps to maintain corroboration windows
+- **No decisions**: Ensure global_pause=false via config or environment override
 
 ### Debug Commands
 ```bash
-go run ./cmd/decision -oneshot=true          # Single run with output
-go run ./cmd/decision -oneshot=false         # Metrics server mode
+go run ./cmd/decision -oneshot=true                                            # Single run with output
+go run ./cmd/decision -oneshot=false                                           # Metrics server mode
+GLOBAL_PAUSE=false go run ./cmd/decision -oneshot=true                         # Override config with env vars
 go run ./cmd/decision -earnings fixtures/earnings_calendar.json -oneshot=true  # Test with earnings calendar
-curl http://127.0.0.1:8090/metrics | jq .   # View metrics
+curl http://127.0.0.1:8090/metrics | jq .                                     # View metrics
+curl http://127.0.0.1:8090/health                                             # Health check endpoint
 ```
+
+## Recent Improvements (Session 5+)
+
+### 🔧 Major Fixes Applied
+- **Fixed duplicate metrics server bug**: Removed hardcoded server startup that ignored oneshot flag
+- **Added environment variable overrides**: `GLOBAL_PAUSE` and `TRADING_MODE` now properly override config.yaml
+- **Resolved test timing issues**: Updated fixture timestamps to maintain active corroboration/embargo windows  
+- **Enhanced test isolation**: Test script clears env vars to allow config file control
+- **Improved error handling**: Better diagnostics for missing configs/fixtures
+
+### 🎯 Current System Reliability
+- **All 7 integration test scenarios pass consistently** ✅
+- **Unit tests compile and run successfully** ✅ 
+- **Environment variable overrides working** ✅
+- **Oneshot vs server mode functioning correctly** ✅
+- **Git workflow with session handoffs established** ✅
 
 ## Documentation Files
 
@@ -110,3 +129,5 @@ curl http://127.0.0.1:8090/metrics | jq .   # View metrics
 - `CONFIG.md` - Configuration reference
 - `docs/TODO.md` - Session tracking (Now/Next/Later/Done)
 - `docs/sessions/` - Per-session implementation notes
+- `docs/VIBE-CODING-GUIDE.md` - Session workflow protocol
+- `docs/NEXT-SESSION-PLAN.md` - Next session planning template
