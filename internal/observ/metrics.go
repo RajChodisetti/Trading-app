@@ -11,11 +11,13 @@ import (
 type registry struct {
 	mu       sync.Mutex
 	counters map[string]map[string]int64 // name -> labelsKey -> count
+	gauges   map[string]map[string]float64 // name -> labelsKey -> value
 	hist     map[string]map[string][]float64
 }
 
 var reg = &registry{
 	counters: map[string]map[string]int64{},
+	gauges:   map[string]map[string]float64{},
 	hist:     map[string]map[string][]float64{},
 }
 
@@ -53,6 +55,18 @@ func IncCounter(name string, labels map[string]string) {
 	m[k]++
 }
 
+func SetGauge(name string, value float64, labels map[string]string) {
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	m, ok := reg.gauges[name]
+	if !ok {
+		m = map[string]float64{}
+		reg.gauges[name] = m
+	}
+	k := canonLabels(labels)
+	m[k] = value
+}
+
 func Observe(name string, value float64, labels map[string]string) {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
@@ -69,13 +83,14 @@ func Observe(name string, value float64, labels map[string]string) {
 func Handler() http.Handler {
 	type dump struct {
 		Counters map[string]map[string]int64     `json:"counters"`
+		Gauges   map[string]map[string]float64   `json:"gauges"`
 		Hist     map[string]map[string][]float64 `json:"histograms"`
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reg.mu.Lock()
 		defer reg.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(dump{Counters: reg.counters, Hist: reg.hist})
+		_ = json.NewEncoder(w).Encode(dump{Counters: reg.counters, Gauges: reg.gauges, Hist: reg.hist})
 	})
 }
 

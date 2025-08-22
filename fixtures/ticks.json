@@ -1,39 +1,27 @@
 {
   "ticks": [
     {
-      "ts_utc": "2025-08-16T14:30:00Z",
+      "ts_utc": "2025-08-16T09:15:00Z",
       "symbol": "AAPL",
       "bid": 210.00,
-      "ask": 210.06,
-      "last": 210.03,
+      "ask": 212.60,
+      "last": 211.30,
       "vwap_5m": 209.80,
-      "rel_volume": 0.8,
+      "rel_volume": 0.4,
       "halted": false,
-      "premarket": false,
+      "premarket": true,
       "postmarket": false
     },
     {
-      "ts_utc": "2025-08-16T14:30:10Z",
-      "symbol": "NVDA",
-      "bid": 450.00,
-      "ask": 450.05,
-      "last": 450.02,
-      "vwap_5m": 449.80,
-      "rel_volume": 0.7,
-      "halted": true,
-      "premarket": false,
-      "postmarket": false
-    },
-    {
-      "ts_utc": "2025-08-16T14:30:20Z",
-      "symbol": "BIOX",
-      "bid": 15.00,
-      "ask": 15.02,
-      "last": 14.98,
-      "vwap_5m": 15.02,
-      "rel_volume": 0.6,
+      "ts_utc": "2025-08-16T09:15:10Z",
+      "symbol": "AAPL",
+      "bid": 209.90,
+      "ask": 212.40,
+      "last": 211.10,
+      "vwap_5m": 209.90,
+      "rel_volume": 0.5,
       "halted": false,
-      "premarket": false,
+      "premarket": true,
       "postmarket": false
     }
   ]

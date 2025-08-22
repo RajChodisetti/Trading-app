@@ -52,17 +52,43 @@ type Wire struct {
 	BackoffMaxMs    int    `yaml:"backoff_max_ms"`
 }
 
+type Slack struct {
+	Enabled                     bool   `yaml:"enabled"`
+	WebhookURL                  string `yaml:"webhook_url"`
+	ChannelDefault              string `yaml:"channel_default"`
+	AlertOnBuy1x                bool   `yaml:"alert_on_buy_1x"`
+	AlertOnBuy5x                bool   `yaml:"alert_on_buy_5x"`
+	AlertOnRejectGates          bool   `yaml:"alert_on_reject_gates"`
+	RateLimitPerMin             int    `yaml:"rate_limit_per_min"`
+	RateLimitPerSymbolPerMin    int    `yaml:"rate_limit_per_symbol_per_min"`
+}
+
+type RuntimeOverrides struct {
+	Enabled              bool   `yaml:"enabled"`
+	FilePath             string `yaml:"file_path"`
+	RefreshIntervalMs    int    `yaml:"refresh_interval_ms"`
+	ExpiryHoursDefault   int    `yaml:"expiry_hours_default"`
+}
+
+type Security struct {
+	SlackSigningSecretEnv   string   `yaml:"slack_signing_secret_env"`
+	AllowedSlackUserIds     []string `yaml:"allowed_slack_user_ids"`
+}
+
 type Root struct {
-	TradingMode      string          `yaml:"trading_mode"` // paper | live | dry-run
-	GlobalPause      bool            `yaml:"global_pause"`
-	Thresholds       Thresholds      `yaml:"thresholds"`
-	Session          Session         `yaml:"session"`
-	Liquidity        Liquidity       `yaml:"liquidity"`
-	Corroboration    Corroboration   `yaml:"corroboration"`
-	EarningsEmbargo  EarningsEmbargo `yaml:"earnings"`
-	Paper            Paper           `yaml:"paper"`
-	Wire             Wire            `yaml:"wire"`
-	BaseUSD          float64         `yaml:"base_usd"`
+	TradingMode       string            `yaml:"trading_mode"` // paper | live | dry-run
+	GlobalPause       bool              `yaml:"global_pause"`
+	Thresholds        Thresholds        `yaml:"thresholds"`
+	Session           Session           `yaml:"session"`
+	Liquidity         Liquidity         `yaml:"liquidity"`
+	Corroboration     Corroboration     `yaml:"corroboration"`
+	EarningsEmbargo   EarningsEmbargo   `yaml:"earnings"`
+	Paper             Paper             `yaml:"paper"`
+	Wire              Wire              `yaml:"wire"`
+	Slack             Slack             `yaml:"slack"`
+	RuntimeOverrides  RuntimeOverrides  `yaml:"runtime_overrides"`
+	Security          Security          `yaml:"security"`
+	BaseUSD           float64           `yaml:"base_usd"`
 }
 
 func Load(path string) (Root, error) {
@@ -116,6 +142,33 @@ func Load(path string) (Root, error) {
 	}
 	if c.Wire.BackoffMaxMs == 0 {
 		c.Wire.BackoffMaxMs = 5000
+	}
+	
+	// Set Slack defaults
+	if c.Slack.ChannelDefault == "" {
+		c.Slack.ChannelDefault = "#trading-alerts"
+	}
+	if c.Slack.RateLimitPerMin == 0 {
+		c.Slack.RateLimitPerMin = 10
+	}
+	if c.Slack.RateLimitPerSymbolPerMin == 0 {
+		c.Slack.RateLimitPerSymbolPerMin = 3
+	}
+	
+	// Set runtime overrides defaults
+	if c.RuntimeOverrides.FilePath == "" {
+		c.RuntimeOverrides.FilePath = "data/runtime_overrides.json"
+	}
+	if c.RuntimeOverrides.RefreshIntervalMs == 0 {
+		c.RuntimeOverrides.RefreshIntervalMs = 10000
+	}
+	if c.RuntimeOverrides.ExpiryHoursDefault == 0 {
+		c.RuntimeOverrides.ExpiryHoursDefault = 24
+	}
+	
+	// Set security defaults
+	if c.Security.SlackSigningSecretEnv == "" {
+		c.Security.SlackSigningSecretEnv = "SLACK_SIGNING_SECRET"
 	}
 	
 	return c, nil

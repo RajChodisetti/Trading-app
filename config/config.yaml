@@ -63,6 +63,26 @@ adapters:
   BROKER: paper              # later: alpaca|ibkr
   ALERTS: stdout             # later: slack|email
 
+slack:
+  enabled: false
+  webhook_url: "http://127.0.0.1:8093/webhook"  # mock for testing
+  channel_default: "#trading-alerts"
+  alert_on_buy_1x: false
+  alert_on_buy_5x: true
+  alert_on_reject_gates: true
+  rate_limit_per_min: 10
+  rate_limit_per_symbol_per_min: 3
+
+runtime_overrides:
+  enabled: true
+  file_path: "data/runtime_overrides.json"
+  refresh_interval_ms: 10000
+  expiry_hours_default: 24
+
+security:
+  slack_signing_secret_env: "SLACK_SIGNING_SECRET"
+  allowed_slack_user_ids: []  # empty = no RBAC
+
 # alert sinks (example)
 alerts:
   slack_webhook_url: ""      # set in secrets manager or env

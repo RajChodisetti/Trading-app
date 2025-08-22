@@ -1,14 +1,14 @@
 # TODO - Trading System Development
 
 ## Now (Current Session Focus)
-- [x] Session 6 complete: Paper order outbox + idempotency (mock fills)
-- [x] Update documentation with Session 6 progress
-- [x] Create next session plan for Session 7
+- [x] Session 8 complete: Slack alerts and operational controls
+- [x] Update documentation with Session 8 progress
+- [x] Create next session plan for Session 9
 
 ## Next (Priority Queue) 
-- [ ] Session 7: Wire stub ingestion loop (HTTP/WebSocket/NATS)
-- [ ] Session 8: Slack alerts and operational controls (/pause, /freeze)
 - [ ] Session 9: Portfolio caps and cooldown gates
+- [ ] Session 10: Wire WebSocket/SSE streaming transport
+- [ ] Session 11: Drawdown monitoring and circuit breakers
 
 ## Later (Future Enhancements)
 - [ ] Drawdown monitoring and circuit breakers
@@ -24,3 +24,5 @@
 - [x] Session 4: PR corroboration window logic (2025-08-17)
 - [x] Session 5: Add earnings embargo gate (2025-08-17)
 - [x] Session 6: Paper order outbox + idempotency (mock fills) (2025-08-21)
+- [x] Session 7: Wire stub HTTP polling ingestion (2025-08-22)
+- [x] Session 8: Slack alerts and operational controls (2025-08-22)

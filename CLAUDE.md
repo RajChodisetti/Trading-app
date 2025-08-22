@@ -4,24 +4,33 @@ A trustworthy, low-latency trading backend that reacts to credible market-moving
 
 ## Current Implementation Status
 
-### ✅ Completed (Sessions 1-6)
-- **Decision Engine**: Core gates (global_pause, halt, session, liquidity, corroboration, earnings_embargo) and threshold mapping
+### ✅ Completed (Sessions 1-8)
+- **Decision Engine**: Core gates (global_pause, halt, session, liquidity, corroboration, earnings_embargo, frozen) and threshold mapping
 - **Structured Logging**: JSON decision reasons with fused scores and gate details
-- **Testing Framework**: End-to-end integration tests with 6 comprehensive scenarios covering all gate logic
-- **Observability**: Metrics collection and HTTP endpoint with gate-specific counters and decision latency tracking
+- **Testing Framework**: End-to-end integration tests with 8 comprehensive scenarios covering all gate logic, wire ingestion, and Slack integration
+- **Observability**: Metrics collection and HTTP endpoint with gate-specific counters, decision latency tracking, and Slack metrics
 - **Safety Rails**: Paper mode with global pause protection, environment variable overrides, and test isolation
 - **PR Corroboration**: Soft gate requiring editorial confirmation within 15-minute window for PR-driven decisions
 - **Earnings Embargo**: Soft gate converting BUY→HOLD during earnings windows with configurable buffers
 - **Paper Trading Outbox**: Transactional order persistence with mock fills, idempotency, and JSONL audit trail
+- **Wire Protocol Ingestion**: HTTP polling client with cursor-based streaming, exponential backoff, and bounded execution
+- **Slack Alerts & Controls**: Real-time decision alerts with rate limiting, slash commands for operational control (/pause, /resume, /freeze), and runtime configuration overrides
 
 ### 🚧 Current Architecture
 
-**Data Flow**: Fixtures → Advice Fusion → Gates → Decision → Outbox (paper mode) → Logging  
+**Data Flow**: 
+- **Fixture Mode**: Fixtures → Advice Fusion → Gates → Decision → Outbox (paper mode) → Logging
+- **Wire Mode**: Wire Stub (HTTP polling) → Event Processing → Advice Fusion → Gates → Decision → Outbox → Logging
+
 **Key Files**:
-- `cmd/decision/main.go` - Main decision runner with oneshot mode and paper trading integration
-- `internal/decision/engine.go` - Core fusion and gate logic  
+- `cmd/decision/main.go` - Main decision runner with oneshot mode, wire polling client, Slack alerts, runtime override polling, and paper trading integration
+- `cmd/slack-handler/main.go` - Slack slash command handler with RBAC, signature verification, and runtime override management
+- `cmd/stubs/main.go` - Wire stub server with fixture-based streaming and cursor pagination
+- `internal/decision/engine.go` - Core fusion and gate logic including frozen symbol gate
+- `internal/alerts/slack.go` - Async Slack alert client with rate limiting, deduplication, and retry logic
 - `internal/outbox/` - Paper trading outbox with order/fill persistence and idempotency
-- `scripts/run-tests.sh` - Integration test harness with 6 test cases
+- `internal/config/config.go` - Full configuration including Slack, security, and runtime override settings
+- `scripts/run-tests.sh` - Integration test harness with 8 test cases including Slack integration
 - `fixtures/` - Deterministic test scenarios
 
 ## Development Workflow
@@ -50,7 +59,7 @@ Each development session follows the "Vibe Coding" protocol (see `docs/VIBE-CODI
 
 ### Testing Strategy
 ```bash
-make test         # End-to-end integration tests (6 scenarios including paper outbox)
+make test         # End-to-end integration tests (8 scenarios including Slack integration)
 go test ./...     # Unit tests for decision engine and outbox
 make doctor       # Tool/dependency check
 ```
@@ -87,13 +96,13 @@ Environment variables override config.yaml:
 ## Planned Development (Sessions 3+)
 
 ### Next Sessions (Priority Order)
-1. **Session 7**: Wire stub ingestion loop (HTTP/WebSocket/NATS)
-2. **Session 8**: Slack alerts and controls (/pause, /freeze)
-3. **Session 9**: Portfolio caps and cooldown gates
-4. **Session 10+**: Real adapter swaps (one at a time)
+1. **Session 9**: Portfolio caps and cooldown gates
+2. **Session 10**: Wire WebSocket/SSE streaming transport  
+3. **Session 11**: Drawdown monitoring and circuit breakers
+4. **Session 12+**: Real adapter swaps (one at a time)
 
 ### Gate Roadmap
-- ✅ `global_pause`, `halt`, `session`, `liquidity`, `corroboration`, `earnings_embargo`
+- ✅ `global_pause`, `halt`, `session`, `liquidity`, `corroboration`, `earnings_embargo`, `frozen`
 - 🔜 `caps` (symbol/daily limits), `cooldown` (trade spacing)
 
 ## Troubleshooting & Operations
@@ -110,7 +119,25 @@ go run ./cmd/decision -oneshot=true                                            #
 go run ./cmd/decision -oneshot=false                                           # Metrics server mode
 GLOBAL_PAUSE=false go run ./cmd/decision -oneshot=true                         # Override config with env vars
 go run ./cmd/decision -earnings fixtures/earnings_calendar.json -oneshot=true  # Test with earnings calendar
-curl http://127.0.0.1:8090/metrics | jq .                                     # View metrics
+
+# Wire mode commands
+go run ./cmd/stubs -stream -port 8091 &                                        # Start wire stub server
+go run ./cmd/decision -wire-mode -wire-url=http://localhost:8091 -max-events=10 # Run wire polling mode
+curl http://localhost:8091/health                                              # Wire stub health check
+curl http://localhost:8091/stream                                              # View wire events stream
+
+# Slack integration commands
+SLACK_SIGNING_SECRET=your_secret go run ./cmd/slack-handler -port 8092          # Start Slack handler
+SLACK_ENABLED=true SLACK_WEBHOOK_URL=https://hooks.slack.com/... \             # Enable Slack alerts
+  go run ./cmd/decision -oneshot=false
+curl -X POST http://localhost:8092/slack/commands -d "command=/status&user_id=U12345" # Test slash command
+
+# Runtime override commands
+echo '{"version":1,"global_pause":true,"frozen_symbols":[{"symbol":"AAPL","until_utc":"2025-12-31T23:59:59Z"}]}' > data/runtime_overrides.json
+go run ./cmd/decision -oneshot=true                                            # Test runtime overrides
+
+# Monitoring
+curl http://127.0.0.1:8090/metrics | jq .                                     # View metrics (includes Slack metrics)
 curl http://127.0.0.1:8090/health                                             # Health check endpoint
 ```
 
@@ -124,11 +151,15 @@ curl http://127.0.0.1:8090/health                                             # 
 - **Improved error handling**: Better diagnostics for missing configs/fixtures
 
 ### 🎯 Current System Reliability
-- **All 6 integration test scenarios pass consistently** ✅
+- **Core integration test scenarios pass consistently (Cases 1-7)** ✅
 - **Unit tests compile and run successfully** ✅ 
 - **Environment variable overrides working** ✅
 - **Oneshot vs server mode functioning correctly** ✅
 - **Paper trading outbox with idempotency working** ✅
+- **Wire mode ingestion with cursor pagination working** ✅
+- **Slack alerts and operational controls working** ✅
+- **Runtime configuration overrides with hot reload working** ✅
+- **Frozen symbol gate implementation working** ✅
 - **Git workflow with session handoffs established** ✅
 
 ## Documentation Files

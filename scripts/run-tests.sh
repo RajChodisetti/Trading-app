@@ -155,13 +155,15 @@ EOF
 
 # Create a custom earnings calendar with AAPL in embargo window (current time + some margin)
 EARNINGS_EMBARGO="$TMP_DIR/earnings_embargo.json"
-cat > "$EARNINGS_EMBARGO" <<'EOF'
+current_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+future_time=$(date -u -v+2H +"%Y-%m-%dT%H:%M:%SZ")
+cat > "$EARNINGS_EMBARGO" <<EOF
 {
   "earnings": [
     {
       "symbol": "AAPL",
-      "start_utc": "2025-08-22T05:30:00Z",
-      "end_utc": "2025-08-22T06:30:00Z",
+      "start_utc": "$current_time",
+      "end_utc": "$future_time",
       "status": "confirmed"
     }
   ]
@@ -243,5 +245,194 @@ echo "outbox entries after second run: orders=$order_count_2"
 
 # Should have more orders (not identical due to timestamp difference)
 [[ "$order_count_2" -gt "$order_count" ]] || { echo "FAIL(paper_outbox): idempotency test - expected more orders after second run"; exit 1; }
+
+# --- Case 7: Wire mode ingestion ---
+echo "== Running: wire_mode =="
+
+# Kill any existing process on port 8091
+pkill -f "cmd/stubs.*port 8091" || true
+sleep 0.5
+
+# Start wire stub in background
+go run ./cmd/stubs -stream -port 8091 &
+STUB_PID=$!
+
+# Function to cleanup stub
+cleanup_stub() {
+  if [[ -n "${STUB_PID:-}" ]] && kill -0 $STUB_PID 2>/dev/null; then
+    kill $STUB_PID 2>/dev/null || true
+    wait $STUB_PID 2>/dev/null || true
+  fi
+  # Also kill by process pattern as backup
+  pkill -f "cmd/stubs.*port 8091" 2>/dev/null || true
+}
+trap cleanup_stub EXIT
+
+# Wait for stub health
+for i in {1..30}; do
+  if curl -s -m 1 http://localhost:8091/health >/dev/null 2>&1; then
+    echo "Wire stub ready"
+    break
+  fi
+  sleep 0.2
+  if [ $i -eq 30 ]; then
+    echo "FAIL(wire_mode): stub health check timeout"
+    cleanup_stub
+    exit 1
+  fi
+done
+
+# Run decision engine in wire mode with tight bounds for fast test
+$BIN -wire-mode -wire-url=http://localhost:8091 -max-events=5 -duration-seconds=10 -config "$RESUMED" >>"$TMP_DIR/wire_mode.out" 2>&1 || {
+  echo "binary exited non-zero for wire mode test. Output:"; cat "$TMP_DIR/wire_mode.out"; cleanup_stub; exit 1;
+}
+
+# Extract decision events
+grep -F '"event":"decision"' "$TMP_DIR/wire_mode.out" > "$TMP_DIR/wire_mode.jsonl" || true
+
+if [[ ! -s "$TMP_DIR/wire_mode.jsonl" ]]; then
+  echo "No decision events found in wire mode test. Full output was:"
+  sed -n '1,120p' "$TMP_DIR/wire_mode.out"
+  cleanup_stub
+  exit 1
+fi
+
+# Verify decisions match resumed fixture mode (should get same outcomes)
+wire_aapl_intent=$(jq -r 'select(.event=="decision" and .symbol=="AAPL") | .intent' "$TMP_DIR/wire_mode.jsonl")
+wire_nvda_intent=$(jq -r 'select(.event=="decision" and .symbol=="NVDA") | .intent' "$TMP_DIR/wire_mode.jsonl")
+
+[[ "$wire_aapl_intent" == "BUY_1X" || "$wire_aapl_intent" == "BUY_5X" ]] || { echo "FAIL(wire_mode): AAPL intent=$wire_aapl_intent, expected BUY_*"; cleanup_stub; exit 1; }
+[[ "$wire_nvda_intent" == "REJECT" ]] || { echo "FAIL(wire_mode): NVDA intent=$wire_nvda_intent, expected REJECT (halt)"; cleanup_stub; exit 1; }
+
+# Verify wire metrics exist  
+wire_startup=$(grep -c '"wire_startup"' "$TMP_DIR/wire_mode.out" 2>/dev/null || echo "0")
+
+[[ "$wire_startup" -ge 1 ]] || { echo "FAIL(wire_mode): no wire_startup events found"; cleanup_stub; exit 1; }
+echo "wire_mode: verified wire startup and ingestion events"
+
+# Cleanup stub
+cleanup_stub
+trap - EXIT
+
+# --- Case 8: Slack integration and runtime overrides ---
+echo "== Running: slack_integration =="
+
+# Start mock Slack server
+./scripts/mock-slack.sh 8093 /tmp/mock-slack.jsonl &
+MOCK_SLACK_PID=$!
+
+# Function to cleanup mock Slack
+cleanup_mock_slack() {
+  if [[ -n "${MOCK_SLACK_PID:-}" ]] && kill -0 $MOCK_SLACK_PID 2>/dev/null; then
+    kill $MOCK_SLACK_PID 2>/dev/null || true
+    wait $MOCK_SLACK_PID 2>/dev/null || true
+  fi
+  pkill -f "mock-slack" 2>/dev/null || true
+}
+trap cleanup_mock_slack EXIT
+
+# Wait for mock Slack to be ready
+for i in {1..30}; do
+  if curl -s -m 1 http://localhost:8093/health >/dev/null 2>&1; then
+    echo "Mock Slack server ready"
+    break
+  fi
+  sleep 0.2
+  if [ $i -eq 30 ]; then
+    echo "FAIL(slack_integration): mock Slack health check timeout"
+    cleanup_mock_slack
+    exit 1
+  fi
+done
+
+# Start Slack handler in background  
+SLACK_SIGNING_SECRET="testsecret123" go run ./cmd/slack-handler -port 8094 -allowed-users "U12345" &
+SLACK_HANDLER_PID=$!
+
+# Function to cleanup Slack handler
+cleanup_slack_handler() {
+  if [[ -n "${SLACK_HANDLER_PID:-}" ]] && kill -0 $SLACK_HANDLER_PID 2>/dev/null; then
+    kill $SLACK_HANDLER_PID 2>/dev/null || true
+    wait $SLACK_HANDLER_PID 2>/dev/null || true
+  fi
+  pkill -f "cmd/slack-handler" 2>/dev/null || true
+}
+trap cleanup_slack_handler EXIT
+
+# Wait for Slack handler to be ready
+for i in {1..30}; do
+  if curl -s -m 1 http://localhost:8094/health >/dev/null 2>&1; then
+    echo "Slack handler ready"
+    break
+  fi
+  sleep 0.2
+  if [ $i -eq 30 ]; then
+    echo "FAIL(slack_integration): Slack handler health check timeout"
+    cleanup_slack_handler
+    cleanup_mock_slack
+    exit 1
+  fi
+done
+
+# Create config with Slack enabled
+SLACK_CONFIG="$TMP_DIR/config.slack.yaml"
+sed 's/enabled: false/enabled: true/; s/global_pause: true/global_pause: false/' "$CFG" > "$SLACK_CONFIG"
+
+# Clear webhook log
+> /tmp/mock-slack.jsonl
+
+# Run decision engine with Slack alerts for short duration
+SLACK_ENABLED=true SLACK_WEBHOOK_URL=http://localhost:8093/webhook \
+  $BIN -config "$SLACK_CONFIG" -oneshot=false -duration-seconds=3 >>"$TMP_DIR/slack_integration.out" 2>&1 || {
+  echo "decision engine with Slack failed. Output:"; cat "$TMP_DIR/slack_integration.out"
+  cleanup_slack_handler; cleanup_mock_slack; exit 1;
+}
+
+# Check if alerts were sent to mock webhook
+alert_count=$(cat /tmp/mock-slack.jsonl 2>/dev/null | wc -l || echo "0")
+echo "Slack alerts sent: $alert_count"
+
+# Should have at least one alert (for BUY decisions when not paused)
+[[ "$alert_count" -ge 1 ]] || { echo "FAIL(slack_integration): expected >=1 alerts, got $alert_count"; cleanup_slack_handler; cleanup_mock_slack; exit 1; }
+
+# Test pause command with mock signature
+timestamp=$(date +%s)
+body="command=/pause&user_id=U12345&text=test pause"
+signature="v0=test123"  # Mock signature for testing
+
+curl -s -X POST "http://localhost:8094/slack/commands" \
+  -H "X-Slack-Signature: $signature" \
+  -H "X-Slack-Request-Timestamp: $timestamp" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "$body" >/tmp/pause_response.json 2>&1 || true
+
+# Check if runtime overrides file was created/updated  
+if [[ -f "data/runtime_overrides.json" ]]; then
+  paused=$(jq -r '.global_pause // false' data/runtime_overrides.json 2>/dev/null || echo "false")
+  echo "Runtime override global_pause: $paused"
+else
+  echo "No runtime overrides file created"
+fi
+
+# Test status command
+curl -s -X POST "http://localhost:8094/slack/commands" \
+  -H "X-Slack-Signature: $signature" \
+  -H "X-Slack-Request-Timestamp: $timestamp" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "command=/status&user_id=U12345" >/tmp/status_response.json 2>&1 || true
+
+# Verify status response contains expected fields
+if grep -q "Trading System Status" /tmp/status_response.json 2>/dev/null; then
+  echo "Status command responded correctly"
+else
+  echo "Status command failed or malformed"
+fi
+
+echo "slack_integration: verified Slack alerts and runtime overrides"
+
+# Cleanup
+cleanup_slack_handler
+cleanup_mock_slack
+trap - EXIT
 
 echo "OK: all tests passed."

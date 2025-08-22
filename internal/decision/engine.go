@@ -35,6 +35,7 @@ type RiskState struct {
 	BlockPremarket    bool
 	BlockPostmarket   bool
 	MaxSpreadBps      float64
+	FrozenSymbols     []string
 }
 
 type Config struct {
@@ -225,6 +226,14 @@ func Evaluate(symbol string, advs []Advice, feat Features, risk RiskState, cfg C
 		reason.GatesBlocked = append(reason.GatesBlocked, "liquidity")
 	}
 
+	// Frozen symbol gate - check if symbol is frozen
+	for _, frozen := range risk.FrozenSymbols {
+		if frozen == symbol {
+			reason.GatesBlocked = append(reason.GatesBlocked, "frozen")
+			break
+		}
+	}
+
 	// Corroboration soft gate - convert would-be BUY to HOLD
 	corroborationBlocked := false
 	if needsCorroboration && corrobState != nil && !now.After(corrobState.Until) && len(corrobState.Missing) > 0 {
@@ -247,8 +256,8 @@ func Evaluate(symbol string, advs []Advice, feat Features, risk RiskState, cfg C
 		}
 	}
 
-	// Hard gates (halt, session, liquidity, global_pause) -> REJECT
-	hardGates := []string{"global_pause", "halt", "session", "liquidity"}
+	// Hard gates (halt, session, liquidity, global_pause, frozen) -> REJECT
+	hardGates := []string{"global_pause", "halt", "session", "liquidity", "frozen"}
 	hasHardGate := false
 	for _, gate := range reason.GatesBlocked {
 		for _, hardGate := range hardGates {

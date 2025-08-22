@@ -85,3 +85,34 @@ proto: dirs
 clean:
 	@rm -rf $(GO_PROTO_OUT)
 	@echo "Cleaned generated artifacts."
+
+.PHONY: doctor init session
+
+doctor:
+	@echo "Checking tools..."
+	@command -v go >/dev/null 2>&1     && echo "✓ go found" || echo "✗ go missing"
+	@command -v protoc >/dev/null 2>&1 && echo "✓ protoc found" || echo "✗ protoc missing"
+	@command -v docker >/dev/null 2>&1 && echo "✓ docker found" || echo "✗ docker missing"
+	@echo "Mode: TRADING_MODE=$(TRADING_MODE) GLOBAL_PAUSE=$(GLOBAL_PAUSE)"
+	@echo "Adapters: NEWS_FEED=$(NEWS_FEED) QUOTES=$(QUOTES) HALTS=$(HALTS) SENTIMENT=$(SENTIMENT) BROKER=$(BROKER) ALERTS=$(ALERTS)"
+
+init:
+	@mkdir -p config contracts gen/go internal/cmd internal/fixtures docs
+	@[ -f config/config.yaml ] || cp config/config.example.yaml config/config.yaml
+	@echo "Project initialized. Edit config/config.yaml and run 'make proto'."
+
+# Creates a vibe session card you can fill in (docs/session-<date>.md)
+session:
+	@d=$$(date +%Y-%m-%d_%H-%M-%S); \
+	file=docs/session-$$d.md; \
+	echo "Theme: <one-liner>" > $$file; \
+	echo "Acceptance: <one sentence>" >> $$file; \
+	echo "Rails: TRADING_MODE=$(TRADING_MODE), GLOBAL_PAUSE=$(GLOBAL_PAUSE)" >> $$file; \
+	echo "Proof: metric <x>, log <y>" >> $$file; \
+	echo "Timebox: 60-90 min" >> $$file; \
+	echo "Notes:" >> $$file; \
+	echo "Created $$file"
+
+	
+test:
+	@scripts/run-tests.sh
