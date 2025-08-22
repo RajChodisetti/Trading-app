@@ -38,6 +38,14 @@ session:
   block_postmarket: true
 
 
+paper:
+  outbox_path: "data/outbox.jsonl"
+  latency_ms_min: 100
+  latency_ms_max: 2000
+  slippage_bps_min: 1
+  slippage_bps_max: 5
+  dedupe_window_seconds: 90
+
 adapters:
   NEWS_FEED: stub            # later: benzinga|reuters|custom
   QUOTES: sim                # later: polygon|broker

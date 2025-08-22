@@ -1,23 +1,20 @@
 # TODO - Trading System Development
 
 ## Now (Current Session Focus)
-- [x] Initialize Claude with knowledge base context
-- [x] Fix make test timeout issue (main.go hanging)
-- [x] Fix test output parsing (jq intent extraction)
-- [x] Update documentation (README, CLAUDE.md) with knowledge transfer
-- [x] Set up session-based TODO workflow
+- [x] Session 6 complete: Paper order outbox + idempotency (mock fills)
+- [x] Update documentation with Session 6 progress
+- [x] Create next session plan for Session 7
 
-## Next (Priority Queue)
-- [ ] Session 6: Paper order outbox + idempotency (mock fills)
+## Next (Priority Queue) 
 - [ ] Session 7: Wire stub ingestion loop (HTTP/WebSocket/NATS)
+- [ ] Session 8: Slack alerts and operational controls (/pause, /freeze)
+- [ ] Session 9: Portfolio caps and cooldown gates
 
 ## Later (Future Enhancements)
-- [ ] Transactional paper outbox with mock fills
-- [ ] Wire stub ingestion loop (HTTP/WebSocket)
-- [ ] Slack alerts and operational controls (/pause, /freeze)
-- [ ] Real adapter integrations (one at a time)
-- [ ] Portfolio caps and cooldown gates
 - [ ] Drawdown monitoring and circuit breakers
+- [ ] Real adapter integrations (one at a time)
+- [ ] Portfolio tracking and PnL calculation
+- [ ] Advanced risk management features
 
 ## Done (Completed Sessions)
 - [x] Session 1: Halts gate + reason logging (completed)
@@ -26,3 +23,4 @@
 - [x] Session 3: Add session and liquidity gates (2025-08-17)
 - [x] Session 4: PR corroboration window logic (2025-08-17)
 - [x] Session 5: Add earnings embargo gate (2025-08-17)
+- [x] Session 6: Paper order outbox + idempotency (mock fills) (2025-08-21)

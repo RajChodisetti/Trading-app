@@ -20,7 +20,7 @@ vendor/
 # Build outputs
 *.exe
 *.out
-decision
+/decision
 
 # Logs
 *.log

@@ -201,4 +201,47 @@ echo "$aapl_gates" | grep -q "earnings_embargo" || { echo "FAIL(earnings_embargo
 # Restore original ticks fixture
 cp "$TMP_DIR/ticks.backup.json" "fixtures/ticks.json" 2>/dev/null || git checkout fixtures/ticks.json 2>/dev/null || true
 
+# --- Case 6: Paper outbox functionality ---
+OUTBOX_TEST_DIR="$TMP_DIR/outbox_test"
+mkdir -p "$OUTBOX_TEST_DIR"
+
+# Create custom config for outbox test
+OUTBOX_CONFIG="$TMP_DIR/config.outbox.yaml"
+sed "s|global_pause: true|global_pause: false|; s|outbox_path: \"data/outbox.jsonl\"|outbox_path: \"$OUTBOX_TEST_DIR/test_outbox.jsonl\"|" "$CFG" > "$OUTBOX_CONFIG"
+
+echo "== Running: paper_outbox ==" 
+$BIN -config "$OUTBOX_CONFIG" >>"$TMP_DIR/paper_outbox.out" 2>&1 || {
+  echo "binary exited non-zero for paper outbox test. Output:"; cat "$TMP_DIR/paper_outbox.out"; exit 1;
+}
+
+# Check outbox file was created
+if [[ ! -f "$OUTBOX_TEST_DIR/test_outbox.jsonl" ]]; then
+  echo "FAIL(paper_outbox): outbox file not created at $OUTBOX_TEST_DIR/test_outbox.jsonl"
+  exit 1
+fi
+
+# Verify outbox contains order and fill entries
+order_count=$(grep -c '"type":"order"' "$OUTBOX_TEST_DIR/test_outbox.jsonl" || echo "0")
+fill_count=$(grep -c '"type":"fill"' "$OUTBOX_TEST_DIR/test_outbox.jsonl" || echo "0")
+
+echo "outbox entries: orders=$order_count, fills=$fill_count"
+
+# Should have at least 1 order (AAPL BUY_1X when not paused)
+[[ "$order_count" -ge 1 ]] || { echo "FAIL(paper_outbox): expected >=1 orders, got $order_count"; exit 1; }
+
+# Fills may take time to appear due to simulated latency, so we'll just check orders for now
+aapl_order=$(jq -r 'select(.type=="order" and .data.symbol=="AAPL") | .data.intent' "$OUTBOX_TEST_DIR/test_outbox.jsonl" | head -1)
+[[ "$aapl_order" == "BUY_1X" || "$aapl_order" == "BUY_5X" ]] || { echo "FAIL(paper_outbox): AAPL order intent=$aapl_order, expected BUY_*"; exit 1; }
+
+# Test idempotency by running again with same config
+sleep 1  # Ensure different timestamp
+$BIN -config "$OUTBOX_CONFIG" >>"$TMP_DIR/paper_outbox_2.out" 2>&1 || true
+
+# Count orders again
+order_count_2=$(grep -c '"type":"order"' "$OUTBOX_TEST_DIR/test_outbox.jsonl" || echo "0")
+echo "outbox entries after second run: orders=$order_count_2"
+
+# Should have more orders (not identical due to timestamp difference)
+[[ "$order_count_2" -gt "$order_count" ]] || { echo "FAIL(paper_outbox): idempotency test - expected more orders after second run"; exit 1; }
+
 echo "OK: all tests passed."

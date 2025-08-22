@@ -33,6 +33,15 @@ type EarningsEmbargo struct {
 	MinutesAfter        int  `yaml:"minutes_after"`
 }
 
+type Paper struct {
+	OutboxPath         string `yaml:"outbox_path"`
+	LatencyMsMin       int    `yaml:"latency_ms_min"`
+	LatencyMsMax       int    `yaml:"latency_ms_max"`
+	SlippageBpsMin     int    `yaml:"slippage_bps_min"`
+	SlippageBpsMax     int    `yaml:"slippage_bps_max"`
+	DedupeWindowSecs   int    `yaml:"dedupe_window_seconds"`
+}
+
 type Root struct {
 	TradingMode      string          `yaml:"trading_mode"` // paper | live | dry-run
 	GlobalPause      bool            `yaml:"global_pause"`
@@ -41,6 +50,7 @@ type Root struct {
 	Liquidity        Liquidity       `yaml:"liquidity"`
 	Corroboration    Corroboration   `yaml:"corroboration"`
 	EarningsEmbargo  EarningsEmbargo `yaml:"earnings"`
+	Paper            Paper           `yaml:"paper"`
 	BaseUSD          float64         `yaml:"base_usd"`
 }
 
@@ -56,5 +66,26 @@ func Load(path string) (Root, error) {
 	if c.BaseUSD == 0 {
 		c.BaseUSD = 2000
 	}
+	
+	// Set paper trading defaults
+	if c.Paper.OutboxPath == "" {
+		c.Paper.OutboxPath = "data/outbox.jsonl"
+	}
+	if c.Paper.LatencyMsMin == 0 {
+		c.Paper.LatencyMsMin = 100
+	}
+	if c.Paper.LatencyMsMax == 0 {
+		c.Paper.LatencyMsMax = 2000
+	}
+	if c.Paper.SlippageBpsMin == 0 {
+		c.Paper.SlippageBpsMin = 1
+	}
+	if c.Paper.SlippageBpsMax == 0 {
+		c.Paper.SlippageBpsMax = 5
+	}
+	if c.Paper.DedupeWindowSecs == 0 {
+		c.Paper.DedupeWindowSecs = 90
+	}
+	
 	return c, nil
 }

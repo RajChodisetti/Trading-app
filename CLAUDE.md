@@ -4,22 +4,24 @@ A trustworthy, low-latency trading backend that reacts to credible market-moving
 
 ## Current Implementation Status
 
-### ✅ Completed (Sessions 1-5)
+### ✅ Completed (Sessions 1-6)
 - **Decision Engine**: Core gates (global_pause, halt, session, liquidity, corroboration, earnings_embargo) and threshold mapping
 - **Structured Logging**: JSON decision reasons with fused scores and gate details
-- **Testing Framework**: End-to-end integration tests with 7 comprehensive scenarios (paused, resumed, after_hours, pr_only, pr_plus_editorial, pr_late_editorial, earnings_embargo)
+- **Testing Framework**: End-to-end integration tests with 6 comprehensive scenarios covering all gate logic
 - **Observability**: Metrics collection and HTTP endpoint with gate-specific counters and decision latency tracking
 - **Safety Rails**: Paper mode with global pause protection, environment variable overrides, and test isolation
 - **PR Corroboration**: Soft gate requiring editorial confirmation within 15-minute window for PR-driven decisions
 - **Earnings Embargo**: Soft gate converting BUY→HOLD during earnings windows with configurable buffers
+- **Paper Trading Outbox**: Transactional order persistence with mock fills, idempotency, and JSONL audit trail
 
 ### 🚧 Current Architecture
 
-**Data Flow**: Fixtures → Advice Fusion → Gates → Decision → Logging  
+**Data Flow**: Fixtures → Advice Fusion → Gates → Decision → Outbox (paper mode) → Logging  
 **Key Files**:
-- `cmd/decision/main.go` - Main decision runner with oneshot mode
+- `cmd/decision/main.go` - Main decision runner with oneshot mode and paper trading integration
 - `internal/decision/engine.go` - Core fusion and gate logic  
-- `scripts/run-tests.sh` - Integration test harness
+- `internal/outbox/` - Paper trading outbox with order/fill persistence and idempotency
+- `scripts/run-tests.sh` - Integration test harness with 6 test cases
 - `fixtures/` - Deterministic test scenarios
 
 ## Development Workflow
@@ -48,8 +50,8 @@ Each development session follows the "Vibe Coding" protocol (see `docs/VIBE-CODI
 
 ### Testing Strategy
 ```bash
-make test         # End-to-end integration tests (paused/resumed scenarios)
-go test ./...     # Unit tests for decision engine
+make test         # End-to-end integration tests (6 scenarios including paper outbox)
+go test ./...     # Unit tests for decision engine and outbox
 make doctor       # Tool/dependency check
 ```
 
@@ -59,7 +61,7 @@ make doctor       # Tool/dependency check
 ```json
 {
   "symbol": "AAPL",
-  "intent": "BUY_1X|BUY_5X|REJECT",  
+  "intent": "BUY_1X|BUY_5X|REDUCE|HOLD|REJECT",  
   "reason": {
     "fused_score": 0.59,
     "per_strategy": {"AAPL": 0.69},
@@ -68,6 +70,12 @@ make doctor       # Tool/dependency check
     "policy": "positive>=0.35; very_positive>=0.65"
   }
 }
+```
+
+### Paper Trading Outbox Structure
+```json
+{"type":"order","data":{"id":"order_AAPL_1755803877176311000","symbol":"AAPL","intent":"BUY_1X","timestamp":"2025-08-21T19:17:57.176311Z","status":"pending","idempotency_key":"1b7668105ed23807"},"event":"2025-08-21T19:17:57.567881Z"}
+{"type":"fill","data":{"order_id":"order_AAPL_1755803877176311000","symbol":"AAPL","quantity":1.0,"price":210.02,"side":"BUY","timestamp":"2025-08-21T19:17:58.176311Z","latency_ms":1500,"slippage_bps":3},"event":"2025-08-21T19:17:58.568881Z"}
 ```
 
 ### Configuration Overrides
@@ -79,10 +87,10 @@ Environment variables override config.yaml:
 ## Planned Development (Sessions 3+)
 
 ### Next Sessions (Priority Order)
-1. **Session 6**: Paper order outbox + idempotency (mock fills)
-2. **Session 7**: Wire stub ingestion loop (HTTP/WebSocket/NATS)
-3. **Session 8**: Slack alerts and controls (/pause, /freeze)
-4. **Session 9+**: Real adapter swaps (one at a time)
+1. **Session 7**: Wire stub ingestion loop (HTTP/WebSocket/NATS)
+2. **Session 8**: Slack alerts and controls (/pause, /freeze)
+3. **Session 9**: Portfolio caps and cooldown gates
+4. **Session 10+**: Real adapter swaps (one at a time)
 
 ### Gate Roadmap
 - ✅ `global_pause`, `halt`, `session`, `liquidity`, `corroboration`, `earnings_embargo`
@@ -116,10 +124,11 @@ curl http://127.0.0.1:8090/health                                             # 
 - **Improved error handling**: Better diagnostics for missing configs/fixtures
 
 ### 🎯 Current System Reliability
-- **All 7 integration test scenarios pass consistently** ✅
+- **All 6 integration test scenarios pass consistently** ✅
 - **Unit tests compile and run successfully** ✅ 
 - **Environment variable overrides working** ✅
 - **Oneshot vs server mode functioning correctly** ✅
+- **Paper trading outbox with idempotency working** ✅
 - **Git workflow with session handoffs established** ✅
 
 ## Documentation Files

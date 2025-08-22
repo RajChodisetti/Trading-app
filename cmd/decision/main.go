@@ -13,6 +13,7 @@ import (
 	"github.com/Rajchodisetti/trading-app/internal/config"
 	"github.com/Rajchodisetti/trading-app/internal/decision"
 	"github.com/Rajchodisetti/trading-app/internal/observ"
+	"github.com/Rajchodisetti/trading-app/internal/outbox"
 )
 
 type haltsFile struct {
@@ -92,6 +93,25 @@ func main() {
 		"trading_mode": cfg.TradingMode,
 		"global_pause": cfg.GlobalPause,
 	})
+
+	// Initialize outbox for paper trading
+	var ob *outbox.Outbox
+	var fillSim *outbox.FillSimulator
+	if cfg.TradingMode == "paper" {
+		var err error
+		ob, err = outbox.New(cfg.Paper.OutboxPath, cfg.Paper.DedupeWindowSecs)
+		if err != nil {
+			log.Fatalf("create outbox: %v", err)
+		}
+		fillSim = outbox.NewFillSimulator(
+			cfg.Paper.LatencyMsMin, cfg.Paper.LatencyMsMax,
+			cfg.Paper.SlippageBpsMin, cfg.Paper.SlippageBpsMax,
+		)
+		observ.Log("outbox_init", map[string]any{
+			"outbox_path": cfg.Paper.OutboxPath,
+			"dedupe_window_secs": cfg.Paper.DedupeWindowSecs,
+		})
+	}
 
 
 	// Load core fixtures (Session 2 uses fixtures as the "ingestion")
@@ -250,6 +270,13 @@ func main() {
 			}
 		}
 
+		// Handle outbox for paper trading
+		if cfg.TradingMode == "paper" && ob != nil && fillSim != nil {
+			if err := processOrderForPaper(act, feat, ob, fillSim); err != nil {
+				log.Printf("outbox error for %s: %v", sym, err)
+			}
+		}
+
 		// Emit decision as a structured log
 		observ.Log("decision", map[string]any{
 			"symbol":     sym,
@@ -275,4 +302,74 @@ func main() {
 		select {}
 	}
 
+}
+
+func processOrderForPaper(act decision.ProposedAction, feat decision.Features, ob *outbox.Outbox, fillSim *outbox.FillSimulator) error {
+	// Only process BUY and REDUCE intents
+	if act.Intent != "BUY_1X" && act.Intent != "BUY_5X" && act.Intent != "REDUCE" {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	
+	// Parse reason to get fused score for idempotency key
+	var reason struct {
+		FusedScore float64 `json:"fused_score"`
+	}
+	if err := json.Unmarshal([]byte(act.ReasonJSON), &reason); err != nil {
+		return fmt.Errorf("parse reason for idempotency: %w", err)
+	}
+
+	// Generate idempotency key
+	idempotencyKey := outbox.GenerateIdempotencyKey(act.Symbol, act.Intent, now, reason.FusedScore)
+
+	// Check for recent duplicate
+	hasRecent, err := ob.HasRecentOrder(idempotencyKey)
+	if err != nil {
+		return fmt.Errorf("check recent orders: %w", err)
+	}
+	if hasRecent {
+		observ.IncCounter("paper_order_dedupe_total", map[string]string{"symbol": act.Symbol})
+		return nil
+	}
+
+	// Create order
+	order := outbox.Order{
+		ID:             outbox.GenerateOrderID(act.Symbol, now),
+		Symbol:         act.Symbol,
+		Intent:         act.Intent,
+		Timestamp:      now,
+		Status:         "pending",
+		IdempotencyKey: idempotencyKey,
+	}
+
+	// Write order to outbox
+	if err := ob.WriteOrder(order); err != nil {
+		return fmt.Errorf("write order: %w", err)
+	}
+
+	observ.IncCounter("paper_orders_total", map[string]string{
+		"symbol": act.Symbol,
+		"intent": act.Intent,
+	})
+
+	// Simulate fill
+	fill, latency := fillSim.SimulateFill(order, feat.Last)
+	
+	// Schedule fill write after latency
+	go func() {
+		time.Sleep(latency)
+		if err := ob.WriteFill(fill); err != nil {
+			log.Printf("write fill for %s: %v", order.ID, err)
+			return
+		}
+		observ.IncCounter("paper_fills_total", map[string]string{
+			"symbol": fill.Symbol,
+			"side":   fill.Side,
+		})
+		observ.Observe("paper_fill_latency_ms", float64(fill.LatencyMs), map[string]string{"symbol": fill.Symbol})
+		observ.Observe("paper_fill_slippage_bps", float64(fill.SlippageBps), map[string]string{"symbol": fill.Symbol})
+	}()
+
+	return nil
 }
