@@ -1,92 +1,98 @@
-# Session 7 Plan: Wire Stub Ingestion Loop
+# Session 7 Plan: HTTP Polling Wire Stub (Focused Scope)
 
 ## Overview
-Create a wire protocol stub that can ingest live-like data streams via HTTP/WebSocket/NATS, replacing the current fixture-based approach for more realistic testing and preparation for real adapter integration.
+Replace fixture loading with HTTP polling ingestion using cursor-based deterministic streaming. Single transport (HTTP poll), deterministic via fixed seed + cursor, adds streaming semantics with health/metrics.
 
 ## Acceptance Criteria
-- **Core Behavior**: System ingests streaming data via configurable wire protocol (HTTP polling, WebSocket, or NATS) instead of loading static fixtures
-- **Success Evidence**: `make test` passes with wire stub generating equivalent data to fixtures, decision latency remains under 5ms, ingestion metrics captured
+- **Core Behavior**: Decision engine polls HTTP stub with cursor, gets versioned events, produces identical decisions to fixture mode
+- **Success Evidence**: `make test` Case 7 passes with wire stub generating deterministic fixture-equivalent data, ingestion latency <10ms, clear cursor progression
 
 ## Implementation Plan
 
-### 1. Wire Stub Infrastructure (30-40 min)
-- Create `internal/wire/` package with:
-  - `stub.go` - HTTP server that serves fixture-like data via endpoints
-  - `client.go` - HTTP/WebSocket client for ingesting from stub server
-  - `types.go` - Common data structures for wire protocol
-- Configure wire stub endpoints:
-  - `GET /news` - Returns news events (with optional since parameter)
-  - `GET /ticks` - Returns market data ticks
-  - `GET /halts` - Returns halt status
-  - `GET /earnings` - Returns earnings calendar
-  - `WebSocket /stream` - Combined stream of all data types
+### 1. Evolve cmd/stubs for Wire Streaming (25-30 min)
+- Extend existing `cmd/stubs` (avoid parallel stub stacks):
+  - Add `/stream` endpoint with `?since=cursor` parameter
+  - Serve fixture data with versioned envelope: `{type, id, ts_utc, payload, v}`
+  - Deterministic ordering via fixed seed, cursor tracks position
+  - Add `/health` endpoint for readiness checks
+- Wire event envelope:
+  ```json
+  {"type":"news","id":"bw-123","ts_utc":"2025-08-22T06:00:00Z","payload":{...news},"v":1}
+  {"type":"tick","id":"tick-456","ts_utc":"2025-08-22T06:00:01Z","payload":{...tick},"v":1}
+  ```
 
-### 2. Ingestion Loop Integration (20-30 min)
-- Modify `cmd/decision/main.go` to support wire mode:
-  - Add `-wire-mode` flag to switch between fixture and wire ingestion
-  - Add `-wire-url` flag to specify stub server URL
-  - Implement periodic polling loop (configurable interval, default 1s)
-  - Maintain existing fixture mode for backward compatibility
-- Update config structure:
-  - Add `wire` section with polling intervals and endpoints
-  - Environment variable overrides for wire settings
+### 2. HTTP Polling Client in Decision Engine (25-30 min)  
+- Modify `cmd/decision/main.go`:
+  - Add `-wire-mode`, `-wire-url`, `-max-events`, `-duration-seconds` flags
+  - HTTP polling loop with cursor state: GET `/stream?since=cursor`
+  - Exponential backoff + jitter on failures, fallback to last good snapshot
+  - At-least-once delivery, idempotent event processing
+- Replace `-oneshot=true` logic for streaming mode:
+  - Stop after `-max-events` (for CI predictability)
+  - Or stop after `-duration-seconds`
+  - Default: run forever (existing server mode)
 
-### 3. Testing & Validation (15-20 min)
-- Extend `scripts/run-tests.sh` with Case 7: wire ingestion
-- Start wire stub server, run decision engine in wire mode
-- Verify decisions match fixture-based results
-- Add wire ingestion metrics (poll count, data freshness, latency)
-- Test graceful handling of wire service downtime
+### 3. Deterministic Cursor + Ordering (15-20 min)
+- Fixed seed reproducibility: stub generates identical event sequence
+- Cursor semantics: opaque string, tracks position in deterministic stream
+- Per-symbol ordering preservation within event types
+- Watermark/lag metrics: track cursor progress vs latest available
 
 ## Configuration Knobs
 ```yaml
 wire:
-  enabled: false                    # default: use fixture mode
-  base_url: "http://localhost:8091" # wire stub server
-  poll_interval_ms: 1000           # how often to poll for updates
+  enabled: false                    # default: use fixture mode  
+  base_url: "http://localhost:8091" # stub server URL
+  poll_interval_ms: 1000           # polling frequency
   timeout_ms: 5000                 # request timeout
-  retry_attempts: 3                # retries on failure
+  max_retries: 3                   # exponential backoff retries
+  backoff_base_ms: 100             # initial backoff
+  backoff_max_ms: 5000             # max backoff cap
 ```
 
 ## Expected Files Changed
-- `internal/wire/stub.go` - HTTP server serving fixture data
-- `internal/wire/client.go` - Ingestion client
-- `internal/wire/types.go` - Wire protocol data structures  
-- `internal/config/config.go` - Add Wire config section
-- `config/config.yaml` - Add wire configuration
-- `cmd/decision/main.go` - Wire mode integration
+- `cmd/stubs/main.go` - Add `/stream` and `/health` endpoints
+- `cmd/decision/main.go` - HTTP polling loop integration 
+- `internal/config/config.go` - Wire config section
+- `config/config.yaml` - Wire configuration
 - `scripts/run-tests.sh` - Case 7: wire ingestion test
 
 ## Success Evidence Patterns
 ```bash
-# Terminal 1: Start wire stub
-go run ./cmd/wire-stub -port 8091
+# Terminal 1: Start enhanced stub server
+go run ./cmd/stubs -port 8091
 
-# Terminal 2: Run decision engine in wire mode  
-go run ./cmd/decision -wire-mode=true -wire-url=http://localhost:8091 -oneshot=true
+# Terminal 2: Wire mode with bounded execution
+go run ./cmd/decision -wire-mode -wire-url=http://localhost:8091 -max-events=10
 
-# Expected: Same decision outputs as fixture mode
-# Expected: Wire ingestion metrics in output
+# Expected: Identical decisions to fixture mode, cursor progression logged
+# Expected: Ingestion latency <10ms, health check success
 ```
 
+## Metrics & Health
+- **Ingestion metrics**: `wire_polls_total`, `wire_events_ingested`, `wire_cursor_lag_seconds`
+- **Health semantics**: `/health` returns 200 when stub ready, 503 when starting up
+- **Latency breakdown**: separate wire fetch time from decision eval time
+- **Error tracking**: connection failures, parse errors, cursor gaps
+
 ## Risk Mitigation
-- **Wire service downtime**: Graceful degradation, cache last known state
-- **Network latency**: Configurable timeouts and retry logic
-- **Data inconsistency**: Validate wire data structure matches fixtures
-- **Performance regression**: Monitor decision latency, maintain <5ms target
+- **Stub downtime**: Exponential backoff, fallback to last snapshot, continue decisions
+- **Cursor gaps**: Log warnings, attempt recovery, track lag metrics
+- **Event flooding**: Bounded execution via `-max-events` prevents CI timeouts
+- **Determinism**: Fixed seed ensures reproducible test outcomes
 
 ## Session Notes Template
 ```markdown
 ### Implementation Details
-- Wire stub server runs on localhost:8091 by default
-- Polling-based ingestion with exponential backoff on failures
-- Data validation ensures wire format matches fixture schema
-- Metrics track: wire_polls_total, wire_data_freshness_seconds, wire_errors_total
+- Reused cmd/stubs to avoid parallel infrastructure
+- Cursor-based pagination with deterministic fixture streaming  
+- Versioned event envelope for future compatibility
+- Health checks prevent test flakiness via readiness waiting
 
 ### Edge Cases Handled
-- Wire server unavailable: fall back to last known data, log warnings
-- Malformed wire data: skip invalid entries, continue processing
-- Network timeouts: retry with backoff, maintain decision pipeline
+- Network failures: exponential backoff with jitter, graceful degradation
+- Parse errors: skip malformed events, continue processing
+- Cursor resets: detect and log, re-establish baseline
 ```
 
-This session bridges fixture-based development with real-time data ingestion, preparing the system for live adapter integration while maintaining deterministic testing capabilities.
+This focused session establishes wire protocol foundations while maintaining deterministic testing and preparing for real adapter integration.

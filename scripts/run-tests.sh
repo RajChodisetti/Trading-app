@@ -160,8 +160,8 @@ cat > "$EARNINGS_EMBARGO" <<'EOF'
   "earnings": [
     {
       "symbol": "AAPL",
-      "start_utc": "2025-08-21T18:30:00Z",
-      "end_utc": "2025-08-21T19:30:00Z",
+      "start_utc": "2025-08-22T05:30:00Z",
+      "end_utc": "2025-08-22T06:30:00Z",
       "status": "confirmed"
     }
   ]

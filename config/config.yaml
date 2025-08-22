@@ -46,6 +46,15 @@ paper:
   slippage_bps_max: 5
   dedupe_window_seconds: 90
 
+wire:
+  enabled: false
+  base_url: "http://localhost:8091"
+  poll_interval_ms: 1000
+  timeout_ms: 5000
+  max_retries: 3
+  backoff_base_ms: 100
+  backoff_max_ms: 5000
+
 adapters:
   NEWS_FEED: stub            # later: benzinga|reuters|custom
   QUOTES: sim                # later: polygon|broker

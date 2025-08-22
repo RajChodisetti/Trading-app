@@ -42,6 +42,16 @@ type Paper struct {
 	DedupeWindowSecs   int    `yaml:"dedupe_window_seconds"`
 }
 
+type Wire struct {
+	Enabled         bool   `yaml:"enabled"`
+	BaseURL         string `yaml:"base_url"`
+	PollIntervalMs  int    `yaml:"poll_interval_ms"`
+	TimeoutMs       int    `yaml:"timeout_ms"`
+	MaxRetries      int    `yaml:"max_retries"`
+	BackoffBaseMs   int    `yaml:"backoff_base_ms"`
+	BackoffMaxMs    int    `yaml:"backoff_max_ms"`
+}
+
 type Root struct {
 	TradingMode      string          `yaml:"trading_mode"` // paper | live | dry-run
 	GlobalPause      bool            `yaml:"global_pause"`
@@ -51,6 +61,7 @@ type Root struct {
 	Corroboration    Corroboration   `yaml:"corroboration"`
 	EarningsEmbargo  EarningsEmbargo `yaml:"earnings"`
 	Paper            Paper           `yaml:"paper"`
+	Wire             Wire            `yaml:"wire"`
 	BaseUSD          float64         `yaml:"base_usd"`
 }
 
@@ -85,6 +96,26 @@ func Load(path string) (Root, error) {
 	}
 	if c.Paper.DedupeWindowSecs == 0 {
 		c.Paper.DedupeWindowSecs = 90
+	}
+	
+	// Set wire defaults
+	if c.Wire.BaseURL == "" {
+		c.Wire.BaseURL = "http://localhost:8091"
+	}
+	if c.Wire.PollIntervalMs == 0 {
+		c.Wire.PollIntervalMs = 1000
+	}
+	if c.Wire.TimeoutMs == 0 {
+		c.Wire.TimeoutMs = 5000
+	}
+	if c.Wire.MaxRetries == 0 {
+		c.Wire.MaxRetries = 3
+	}
+	if c.Wire.BackoffBaseMs == 0 {
+		c.Wire.BackoffBaseMs = 100
+	}
+	if c.Wire.BackoffMaxMs == 0 {
+		c.Wire.BackoffMaxMs = 5000
 	}
 	
 	return c, nil

@@ -3,7 +3,7 @@
     {
       "id": "bw-400",
       "provider": "businesswire",
-      "published_at_utc": "2025-08-21T19:20:00Z",
+      "published_at_utc": "2025-08-22T05:50:00Z",
       "headline": "BioX Reports Strong Phase 2 Efficacy Results",
       "body": "Company-issued press release claims positive efficacy.",
       "urls": ["https://example.com/biox-pr"],
@@ -17,7 +17,7 @@
     {
       "id": "reuters-300",
       "provider": "reuters",
-      "published_at_utc": "2025-08-21T19:22:00Z",
+      "published_at_utc": "2025-08-22T05:52:00Z",
       "headline": "Editors: BioX Phase 2 signals promising but needs Phase 3",
       "body": "Independent editorial coverage citing external analysts.",
       "urls": ["https://example.com/biox-editorial"],

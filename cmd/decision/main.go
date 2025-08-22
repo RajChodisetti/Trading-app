@@ -5,8 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,6 +60,65 @@ type earningsFile struct {
 	} `json:"earnings"`
 }
 
+// Wire event structures
+type WireEvent struct {
+	Type    string          `json:"type"`
+	ID      string          `json:"id"`
+	TsUTC   string          `json:"ts_utc"`
+	Payload json.RawMessage `json:"payload"`
+	V       int             `json:"v"`
+}
+
+type StreamResponse struct {
+	Events []WireEvent `json:"events"`
+	Cursor string      `json:"cursor"`
+}
+
+type WireClient struct {
+	baseURL    string
+	httpClient *http.Client
+	cursor     string
+}
+
+func NewWireClient(baseURL string, timeoutMs int) *WireClient {
+	return &WireClient{
+		baseURL: baseURL,
+		httpClient: &http.Client{
+			Timeout: time.Duration(timeoutMs) * time.Millisecond,
+		},
+		cursor: "0",
+	}
+}
+
+func (w *WireClient) Poll() ([]WireEvent, error) {
+	u, err := url.Parse(w.baseURL + "/stream")
+	if err != nil {
+		return nil, err
+	}
+	
+	q := u.Query()
+	q.Set("since", w.cursor)
+	u.RawQuery = q.Encode()
+	
+	resp, err := w.httpClient.Get(u.String())
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("wire server returned %d", resp.StatusCode)
+	}
+	
+	var streamResp StreamResponse
+	if err := json.NewDecoder(resp.Body).Decode(&streamResp); err != nil {
+		return nil, err
+	}
+	
+	w.cursor = streamResp.Cursor
+	return streamResp.Events, nil
+}
+
 func mustRead(path string, v any) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -71,9 +133,17 @@ func main() {
 	var cfgPath string
 	var earningsPath string
 	var oneShot bool
+	var wireMode bool
+	var wireURL string
+	var maxEvents int
+	var durationSeconds int
 	flag.StringVar(&cfgPath, "config", "config/config.yaml", "config path")
 	flag.StringVar(&earningsPath, "earnings", "fixtures/earnings_calendar.json", "earnings calendar path")
 	flag.BoolVar(&oneShot, "oneshot", true, "exit after emitting decisions (set false to keep /metrics server)")
+	flag.BoolVar(&wireMode, "wire-mode", false, "enable wire polling mode")
+	flag.StringVar(&wireURL, "wire-url", "", "wire server URL (overrides config)")
+	flag.IntVar(&maxEvents, "max-events", 0, "stop after processing max events (for CI)")
+	flag.IntVar(&durationSeconds, "duration-seconds", 0, "stop after duration (for CI)")
 	flag.Parse()
 
 	cfg, err := config.Load(cfgPath)
@@ -88,10 +158,22 @@ func main() {
 	if os.Getenv("TRADING_MODE") != "" {
 		cfg.TradingMode = os.Getenv("TRADING_MODE")
 	}
+	if os.Getenv("WIRE_ENABLED") != "" {
+		cfg.Wire.Enabled = os.Getenv("WIRE_ENABLED") == "true"
+	}
+	
+	// Apply command line overrides
+	if wireMode {
+		cfg.Wire.Enabled = true
+	}
+	if wireURL != "" {
+		cfg.Wire.BaseURL = wireURL
+	}
 
 	observ.Log("startup", map[string]any{
 		"trading_mode": cfg.TradingMode,
 		"global_pause": cfg.GlobalPause,
+		"wire_enabled": cfg.Wire.Enabled,
 	})
 
 	// Initialize outbox for paper trading

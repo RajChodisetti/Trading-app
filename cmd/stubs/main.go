@@ -2,8 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"log"
+	"math/rand"
 	"net/http"
+	"os"
+	"sort"
+	"strconv"
 	"time"
 )
 
@@ -63,6 +68,147 @@ type EarningsPayload struct {
 	Earnings []EarningsEvent `json:"earnings"`
 }
 
+// ---- wire event envelope ----
+
+type WireEvent struct {
+	Type    string      `json:"type"`     // news, tick, halt, earnings
+	ID      string      `json:"id"`       // unique event identifier
+	TsUTC   string      `json:"ts_utc"`   // event timestamp
+	Payload interface{} `json:"payload"`  // actual event data
+	V       int         `json:"v"`        // version
+}
+
+type StreamResponse struct {
+	Events []WireEvent `json:"events"`
+	Cursor string      `json:"cursor"`  // opaque cursor for next request
+}
+
+// ---- fixture loading and streaming ----
+
+var fixtureEvents []WireEvent
+
+func loadFixtures() {
+	// Fixed seed for deterministic ordering
+	rand.Seed(42)
+	
+	var events []WireEvent
+	baseTime := time.Now().UTC()
+	
+	// Load news fixtures
+	if newsData, err := os.ReadFile("fixtures/news.json"); err == nil {
+		var newsPayload NewsPayload
+		if err := json.Unmarshal(newsData, &newsPayload); err == nil {
+			for i, item := range newsPayload.News {
+				events = append(events, WireEvent{
+					Type:    "news",
+					ID:      item.ID,
+					TsUTC:   baseTime.Add(time.Duration(i) * time.Second).Format(time.RFC3339),
+					Payload: item,
+					V:       1,
+				})
+			}
+		}
+	}
+	
+	// Load ticks fixtures  
+	if ticksData, err := os.ReadFile("fixtures/ticks.json"); err == nil {
+		var ticksPayload TicksPayload
+		if err := json.Unmarshal(ticksData, &ticksPayload); err == nil {
+			for i, tick := range ticksPayload.Ticks {
+				events = append(events, WireEvent{
+					Type:    "tick", 
+					ID:      tick.Symbol + "-tick-" + strconv.Itoa(i),
+					TsUTC:   baseTime.Add(time.Duration(len(events)) * time.Second).Format(time.RFC3339),
+					Payload: tick,
+					V:       1,
+				})
+			}
+		}
+	}
+	
+	// Load halts fixtures
+	if haltsData, err := os.ReadFile("fixtures/halts.json"); err == nil {
+		var haltsPayload HaltsPayload
+		if err := json.Unmarshal(haltsData, &haltsPayload); err == nil {
+			for i, halt := range haltsPayload.Halts {
+				events = append(events, WireEvent{
+					Type:    "halt",
+					ID:      halt.Symbol + "-halt-" + strconv.Itoa(i),
+					TsUTC:   baseTime.Add(time.Duration(len(events)) * time.Second).Format(time.RFC3339),
+					Payload: halt,
+					V:       1,
+				})
+			}
+		}
+	}
+	
+	// Load earnings fixtures
+	if earningsData, err := os.ReadFile("fixtures/earnings_calendar.json"); err == nil {
+		var earningsPayload EarningsPayload
+		if err := json.Unmarshal(earningsData, &earningsPayload); err == nil {
+			for i, earning := range earningsPayload.Earnings {
+				events = append(events, WireEvent{
+					Type:    "earnings",
+					ID:      earning.Symbol + "-earnings-" + strconv.Itoa(i), 
+					TsUTC:   baseTime.Add(time.Duration(len(events)) * time.Second).Format(time.RFC3339),
+					Payload: earning,
+					V:       1,
+				})
+			}
+		}
+	}
+	
+	// Shuffle for more realistic mixed streaming, but keep deterministic with fixed seed
+	rand.Shuffle(len(events), func(i, j int) {
+		events[i], events[j] = events[j], events[i]
+	})
+	
+	// Sort by timestamp to ensure proper ordering
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].TsUTC < events[j].TsUTC
+	})
+	
+	fixtureEvents = events
+	log.Printf("Loaded %d fixture events for streaming", len(fixtureEvents))
+}
+
+func streamHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	since := r.URL.Query().Get("since")
+	startIdx := 0
+	
+	// Parse cursor to find starting position
+	if since != "" {
+		if idx, err := strconv.Atoi(since); err == nil && idx >= 0 && idx < len(fixtureEvents) {
+			startIdx = idx
+		}
+	}
+	
+	// Return up to 10 events at a time
+	batchSize := 10
+	endIdx := startIdx + batchSize
+	if endIdx > len(fixtureEvents) {
+		endIdx = len(fixtureEvents)
+	}
+	
+	events := fixtureEvents[startIdx:endIdx]
+	nextCursor := strconv.Itoa(endIdx)
+	
+	response := StreamResponse{
+		Events: events,
+		Cursor: nextCursor,
+	}
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+	
+	log.Printf("Streamed %d events, cursor %s->%s", len(events), since, nextCursor)
+}
+
 // ---- helpers ----
 
 func health(w http.ResponseWriter, r *http.Request) {
@@ -102,44 +248,70 @@ func serve(port string, routes map[string]http.HandlerFunc) {
 }
 
 func main() {
-	// 8081: halts
-	serve("8081", map[string]http.HandlerFunc{
-		"/halts": func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost {
-				http.Error(w, "POST only", http.StatusMethodNotAllowed)
-				return
-			}
-			postJSON[HaltsPayload](w, r, "halts")
-		},
-	})
-	// 8082: news (+ earnings)
-	serve("8082", map[string]http.HandlerFunc{
-		"/news": func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost {
-				http.Error(w, "POST only", http.StatusMethodNotAllowed)
-				return
-			}
-			postJSON[NewsPayload](w, r, "news")
-		},
-		"/earnings": func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost {
-				http.Error(w, "POST only", http.StatusMethodNotAllowed)
-				return
-			}
-			postJSON[EarningsPayload](w, r, "earnings")
-		},
-	})
-	// 8083: ticks
-	serve("8083", map[string]http.HandlerFunc{
-		"/ticks": func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost {
-				http.Error(w, "POST only", http.StatusMethodNotAllowed)
-				return
-			}
-			postJSON[TicksPayload](w, r, "ticks")
-		},
-	})
+	var streamMode bool
+	var port string
+	
+	flag.BoolVar(&streamMode, "stream", false, "enable streaming mode")
+	flag.StringVar(&port, "port", "8091", "port for streaming mode")
+	flag.Parse()
+	
+	if streamMode {
+		// Wire streaming mode - single port with /stream endpoint
+		log.Printf("Starting wire streaming mode on port %s", port)
+		loadFixtures()
+		
+		mux := http.NewServeMux()
+		mux.HandleFunc("/health", health)
+		mux.HandleFunc("/stream", streamHandler)
+		
+		addr := ":" + port
+		log.Printf("Wire stub listening on %s", addr)
+		if err := http.ListenAndServe(addr, mux); err != nil {
+			log.Fatalf("wire stub server error: %v", err)
+		}
+	} else {
+		// Original stub receiver mode - multiple ports
+		log.Println("Starting original stub receiver mode")
+		
+		// 8081: halts
+		serve("8081", map[string]http.HandlerFunc{
+			"/halts": func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "POST only", http.StatusMethodNotAllowed)
+					return
+				}
+				postJSON[HaltsPayload](w, r, "halts")
+			},
+		})
+		// 8082: news (+ earnings)
+		serve("8082", map[string]http.HandlerFunc{
+			"/news": func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "POST only", http.StatusMethodNotAllowed)
+					return
+				}
+				postJSON[NewsPayload](w, r, "news")
+			},
+			"/earnings": func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "POST only", http.StatusMethodNotAllowed)
+					return
+				}
+				postJSON[EarningsPayload](w, r, "earnings")
+			},
+		})
+		// 8083: ticks
+		serve("8083", map[string]http.HandlerFunc{
+			"/ticks": func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					http.Error(w, "POST only", http.StatusMethodNotAllowed)
+					return
+				}
+				postJSON[TicksPayload](w, r, "ticks")
+			},
+		})
 
-	// block forever
-	select {}
+		// block forever
+		select {}
+	}
 }
