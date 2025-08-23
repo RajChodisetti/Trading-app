@@ -117,7 +117,8 @@ func main() {
 			feat.Halted = h
 		}
 
-		act := decision.Evaluate(sym, advBySym[sym], feat, risk, cfg, []decision.EarningsEvent{})
+		// Create nil risk managers for replay (legacy mode)
+		act := decision.Evaluate(sym, advBySym[sym], feat, risk, cfg, []decision.EarningsEvent{}, nil, nil, nil, nil)
 		fmt.Printf("{\"symbol\":\"%s\",\"intent\":\"%s\",\"reason\":%s}\n",
 			sym, act.Intent, act.ReasonJSON)
 	}

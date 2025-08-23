@@ -2,15 +2,7 @@
   "halts": [
     {
       "symbol": "NVDA",
-      "halted": true,
-      "ts_utc": "2025-08-16T16:00:00Z",
-      "reason": "LUDP/volatility"
-    },
-    {
-      "symbol": "AAPL",
-      "halted": false,
-      "ts_utc": "2025-08-16T16:00:00Z",
-      "reason": ""
+      "halted": true
     }
   ]
 }
