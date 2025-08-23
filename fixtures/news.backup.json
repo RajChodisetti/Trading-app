@@ -1,9 +1,9 @@
 {
   "news": [
     {
-      "id": "bw-300",
+      "id": "bw-default",
       "provider": "businesswire",
-      "published_at_utc": "2025-08-23T14:04:48Z",
+      "published_at_utc": "2025-08-18T14:15:00Z",
       "headline": "BioX Reports Strong Phase 2 Efficacy Results",
       "body": "Company-issued press release claims positive efficacy.",
       "urls": ["https://example.com/biox-pr"],
@@ -12,7 +12,7 @@
       "is_correction": false,
       "supersedes_id": null,
       "source_weight": 1.2,
-      "headline_hash": "pr-biox-2"
+      "headline_hash": "pr-biox-default"
     }
   ]
 }

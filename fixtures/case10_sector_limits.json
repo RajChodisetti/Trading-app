@@ -1,0 +1,60 @@
+{
+  "news": [
+    {
+      "id": "tech-surge-1",
+      "tickers": ["AAPL", "MSFT", "GOOGL"],
+      "is_press_release": false,
+      "provider": "reuters",
+      "headline_hash": "tech-sector-surge",
+      "published_at_utc": "2025-08-23T14:00:00Z"
+    }
+  ],
+  "ticks": [
+    {
+      "symbol": "AAPL",
+      "last": 220.00,
+      "vwap_5m": 218.50,
+      "rel_volume": 1.2,
+      "halted": false,
+      "premarket": false,
+      "postmarket": false,
+      "bid": 219.90,
+      "ask": 220.10
+    },
+    {
+      "symbol": "MSFT",
+      "last": 340.00,
+      "vwap_5m": 338.50,
+      "rel_volume": 1.1,
+      "halted": false,
+      "premarket": false,
+      "postmarket": false,
+      "bid": 339.90,
+      "ask": 340.10
+    },
+    {
+      "symbol": "GOOGL",
+      "last": 160.00,
+      "vwap_5m": 158.50,
+      "rel_volume": 1.0,
+      "halted": false,
+      "premarket": false,
+      "postmarket": false,
+      "bid": 159.90,
+      "ask": 160.10
+    },
+    {
+      "symbol": "NVDA",
+      "last": 450.00,
+      "vwap_5m": 448.50,
+      "rel_volume": 1.3,
+      "halted": false,
+      "premarket": false,
+      "postmarket": false,
+      "bid": 449.90,
+      "ask": 450.10
+    }
+  ],
+  "halts": [],
+  "earnings": []
+}

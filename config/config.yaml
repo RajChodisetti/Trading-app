@@ -16,6 +16,41 @@ risk:
   daily_drawdown_pause_nav_pct: 3
   cooldown_minutes: 5
 
+risk_controls:
+  stop_loss:
+    enabled: true
+    default_stop_loss_pct: 6
+    emergency_stop_loss_pct: 10
+    allow_after_hours: false
+    cooldown_hours: 24
+
+  sector_limits:
+    enabled: true
+    max_sector_exposure_pct: 40
+    sector_map:
+      AAPL: tech
+      MSFT: tech
+      GOOGL: tech
+      NVDA: tech
+      JPM: finance
+      BAC: finance
+      GS: finance
+      BIOX: biotech
+      GILD: biotech
+      MRNA: biotech
+
+  drawdown:
+    enabled: true
+    daily_warning_pct: 2.0
+    daily_pause_pct: 3.0
+    weekly_warning_pct: 5.0
+    weekly_pause_pct: 8.0
+    size_multiplier_on_warning_pct: 50
+
+monitoring:
+  dashboard_recent_trades: 5
+  health_check_interval_minutes: 5
+
 corroboration:
   require_positive_pr: true
   window_seconds: 900        # 15 minutes

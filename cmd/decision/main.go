@@ -19,6 +19,7 @@ import (
 	"github.com/Rajchodisetti/trading-app/internal/observ"
 	"github.com/Rajchodisetti/trading-app/internal/outbox"
 	"github.com/Rajchodisetti/trading-app/internal/portfolio"
+	"github.com/Rajchodisetti/trading-app/internal/risk"
 )
 
 type haltsFile struct {
@@ -500,6 +501,36 @@ func main() {
 		})
 	}
 
+	// Initialize risk managers
+	var stopLossMgr *risk.StopLossManager
+	var sectorMgr *risk.SectorExposureManager
+	var drawdownMgr *risk.DrawdownManager
+
+	if cfg.RiskControls.StopLoss.Enabled {
+		stopLossMgr = risk.NewStopLossManager(ob)
+		observ.Log("stoploss_init", map[string]any{
+			"default_stop_pct": cfg.RiskControls.StopLoss.DefaultStopLossPct,
+			"cooldown_hours":   cfg.RiskControls.StopLoss.CooldownHours,
+		})
+	}
+
+	if cfg.RiskControls.SectorLimits.Enabled {
+		sectorMgr = risk.NewSectorExposureManager(cfg.RiskControls.SectorLimits.SectorMap)
+		observ.Log("sector_limits_init", map[string]any{
+			"max_sector_exposure": cfg.RiskControls.SectorLimits.MaxSectorExposurePct,
+			"sectors_mapped":      len(cfg.RiskControls.SectorLimits.SectorMap),
+		})
+	}
+
+	if cfg.RiskControls.Drawdown.Enabled {
+		drawdownMgr = risk.NewDrawdownManager()
+		observ.Log("drawdown_init", map[string]any{
+			"daily_warning":  cfg.RiskControls.Drawdown.DailyWarningPct,
+			"daily_pause":    cfg.RiskControls.Drawdown.DailyPausePct,
+			"weekly_warning": cfg.RiskControls.Drawdown.WeeklyWarningPct,
+			"weekly_pause":   cfg.RiskControls.Drawdown.WeeklyPausePct,
+		})
+	}
 
 	// Load data: either from wire streaming or fixtures
 	var hf haltsFile
@@ -713,6 +744,28 @@ func main() {
 			CooldownMinutesPerSymbol:    cfg.Portfolio.CooldownMinutesPerSymbol,
 			MaxDailyExposureIncreasePct: cfg.Portfolio.MaxDailyExposureIncreasePct,
 		},
+		RiskControls: decision.RiskControlsConfig{
+			StopLoss: risk.StopLossConfig{
+				Enabled:              cfg.RiskControls.StopLoss.Enabled,
+				DefaultStopLossPct:   cfg.RiskControls.StopLoss.DefaultStopLossPct,
+				EmergencyStopLossPct: cfg.RiskControls.StopLoss.EmergencyStopLossPct,
+				AllowAfterHours:      cfg.RiskControls.StopLoss.AllowAfterHours,
+				CooldownHours:        cfg.RiskControls.StopLoss.CooldownHours,
+			},
+			SectorLimits: risk.SectorLimitsConfig{
+				Enabled:              cfg.RiskControls.SectorLimits.Enabled,
+				MaxSectorExposurePct: cfg.RiskControls.SectorLimits.MaxSectorExposurePct,
+				SectorMap:            cfg.RiskControls.SectorLimits.SectorMap,
+			},
+			Drawdown: risk.DrawdownConfig{
+				Enabled:                    cfg.RiskControls.Drawdown.Enabled,
+				DailyWarningPct:            cfg.RiskControls.Drawdown.DailyWarningPct,
+				DailyPausePct:              cfg.RiskControls.Drawdown.DailyPausePct,
+				WeeklyWarningPct:           cfg.RiskControls.Drawdown.WeeklyWarningPct,
+				WeeklyPausePct:             cfg.RiskControls.Drawdown.WeeklyPausePct,
+				SizeMultiplierOnWarningPct: cfg.RiskControls.Drawdown.SizeMultiplierOnWarningPct,
+			},
+		},
 	}
 	risk := decision.RiskState{
 		GlobalPause:     cfg.GlobalPause,
@@ -749,7 +802,7 @@ func main() {
 		}
 
 		start := time.Now()
-		act := decision.Evaluate(sym, advBySym[sym], feat, risk, engineCfg, earningsEvents, portfolioMgr)
+		act := decision.Evaluate(sym, advBySym[sym], feat, risk, engineCfg, earningsEvents, portfolioMgr, stopLossMgr, sectorMgr, drawdownMgr)
 		latMs := float64(time.Since(start).Microseconds()) / 1000.0
 
 		// Record metrics
@@ -765,6 +818,29 @@ func main() {
 		if err := json.Unmarshal([]byte(act.ReasonJSON), &reason); err == nil {
 			for _, g := range reason.GatesBlocked {
 				observ.IncCounter("decision_gate_blocks_total", map[string]string{"gate": g, "symbol": sym})
+			}
+		}
+
+		// Update portfolio NAV for drawdown calculations
+		if drawdownMgr != nil && portfolioMgr != nil {
+			currentNAV := portfolioMgr.GetNAV()
+			drawdownMgr.UpdateNAV(currentNAV, time.Now(), engineCfg.RiskControls.Drawdown)
+		}
+
+		// Check stop-loss triggers for existing positions
+		if stopLossMgr != nil && portfolioMgr != nil && feat.Last > 0 {
+			if entryVWAP, hasPosition := portfolioMgr.GetEntryVWAP(sym); hasPosition {
+				isAfterHours := feat.Premarket || feat.Postmarket
+				if triggered, err := stopLossMgr.CheckStopLoss(sym, feat.Last, entryVWAP, engineCfg.RiskControls.StopLoss, isAfterHours, time.Now()); err != nil {
+					log.Printf("stop-loss check error for %s: %v", sym, err)
+				} else if triggered {
+					observ.Log("stop_loss_triggered", map[string]any{
+						"symbol":      sym,
+						"entry_vwap":  entryVWAP,
+						"current":     feat.Last,
+						"loss_pct":    ((entryVWAP - feat.Last) / entryVWAP) * 100,
+					})
+				}
 			}
 		}
 

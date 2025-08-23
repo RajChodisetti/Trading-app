@@ -2,11 +2,13 @@ package decision
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"time"
 	
 	"github.com/Rajchodisetti/trading-app/internal/observ"
 	"github.com/Rajchodisetti/trading-app/internal/portfolio"
+	"github.com/Rajchodisetti/trading-app/internal/risk"
 )
 
 type Advice struct {
@@ -46,6 +48,13 @@ type Config struct {
 	Corroboration   CorroborationConfig
 	EarningsEmbargo EarningsEmbargoConfig
 	Portfolio       PortfolioConfig
+	RiskControls    RiskControlsConfig
+}
+
+type RiskControlsConfig struct {
+	StopLoss      risk.StopLossConfig
+	SectorLimits  risk.SectorLimitsConfig  
+	Drawdown      risk.DrawdownConfig
 }
 
 type PortfolioConfig struct {
@@ -151,7 +160,7 @@ func fuseWithoutPR(advs []Advice) (float64, map[string]float64) {
 
 // Evaluate applies gates then threshold mapping.
 // For session #1 we only use GlobalPause and Halt gates + thresholds.
-func Evaluate(symbol string, advs []Advice, feat Features, risk RiskState, cfg Config, earningsEvents []EarningsEvent, portfolioMgr *portfolio.Manager) ProposedAction {
+func Evaluate(symbol string, advs []Advice, feat Features, risk RiskState, cfg Config, earningsEvents []EarningsEvent, portfolioMgr *portfolio.Manager, stopLossMgr *risk.StopLossManager, sectorMgr *risk.SectorExposureManager, drawdownMgr *risk.DrawdownManager) ProposedAction {
 	now := time.Now()
 	
 	// Check corroboration requirements
@@ -244,6 +253,13 @@ func Evaluate(symbol string, advs []Advice, feat Features, risk RiskState, cfg C
 			break
 		}
 	}
+	
+	// Stop-loss cooldown gate
+	if stopLossMgr != nil && cfg.RiskControls.StopLoss.Enabled {
+		if stopLossMgr.IsInCooldown(symbol, now) {
+			reason.GatesBlocked = append(reason.GatesBlocked, "cooldown_stop")
+		}
+	}
 
 	// Portfolio gates - only check if portfolio management is enabled and trade would be BUY
 	if cfg.Portfolio.Enabled && portfolioMgr != nil && fused >= cfg.Positive {
@@ -316,8 +332,49 @@ func Evaluate(symbol string, advs []Advice, feat Features, risk RiskState, cfg C
 		}
 	}
 
-	// Hard gates (halt, session, liquidity, global_pause, frozen, caps, cooldown) -> REJECT
-	hardGates := []string{"global_pause", "halt", "session", "liquidity", "frozen", "caps", "cooldown"}
+	// Sector limits soft gate - check if BUY would exceed sector exposure
+	sectorBlocked := false
+	if sectorMgr != nil && cfg.RiskControls.SectorLimits.Enabled && portfolioMgr != nil && fused >= cfg.Positive {
+		var proposedNotional float64
+		if fused >= cfg.VeryPos {
+			proposedNotional = cfg.BaseUSD * 5
+		} else {
+			proposedNotional = cfg.BaseUSD
+		}
+		
+		nav := portfolioMgr.GetNAV()
+		positions := portfolioMgr.GetPositionNotionals()
+		
+		exceeds, sector := sectorMgr.CheckSectorLimit(symbol, proposedNotional, nav, positions, cfg.RiskControls.SectorLimits)
+		if exceeds {
+			reason.GatesBlocked = append(reason.GatesBlocked, "sector_limit")
+			reason.WhatWouldChange = "reduce " + sector + " sector exposure below " + fmt.Sprintf("%.1f%%", cfg.RiskControls.SectorLimits.MaxSectorExposurePct)
+			sectorBlocked = true
+		}
+	}
+
+	// Drawdown pause soft gate - check if drawdown should pause new buys
+	drawdownBlocked := false
+	if drawdownMgr != nil && cfg.RiskControls.Drawdown.Enabled {
+		var intent string
+		if fused >= cfg.VeryPos {
+			intent = "BUY_5X"
+		} else if fused >= cfg.Positive {
+			intent = "BUY_1X"
+		} else {
+			intent = "HOLD"
+		}
+		
+		blocked, gateName := drawdownMgr.CheckDrawdownGates(intent, cfg.RiskControls.Drawdown)
+		if blocked {
+			reason.GatesBlocked = append(reason.GatesBlocked, gateName)
+			reason.WhatWouldChange = "wait for drawdown to recover"
+			drawdownBlocked = true
+		}
+	}
+
+	// Hard gates (halt, session, liquidity, global_pause, frozen, caps, cooldown, cooldown_stop) -> REJECT
+	hardGates := []string{"global_pause", "halt", "session", "liquidity", "frozen", "caps", "cooldown", "cooldown_stop"}
 	hasHardGate := false
 	for _, gate := range reason.GatesBlocked {
 		for _, hardGate := range hardGates {
@@ -342,7 +399,7 @@ func Evaluate(symbol string, advs []Advice, feat Features, risk RiskState, cfg C
 	intent := "HOLD"
 	usd := 0.0
 	
-	// If corroboration or earnings embargo is blocking, force HOLD regardless of score
+	// If any soft gate is blocking, force HOLD regardless of score
 	if corroborationBlocked {
 		intent = "HOLD"
 		usd = 0.0
@@ -350,14 +407,25 @@ func Evaluate(symbol string, advs []Advice, feat Features, risk RiskState, cfg C
 	} else if earningsBlocked {
 		intent = "HOLD"
 		usd = 0.0
+	} else if sectorBlocked {
+		intent = "HOLD"
+		usd = 0.0
+	} else if drawdownBlocked {
+		intent = "HOLD"
+		usd = 0.0
 	} else {
-		// Normal threshold mapping
+		// Normal threshold mapping with drawdown size multiplier
+		sizeMultiplier := 1.0
+		if drawdownMgr != nil {
+			sizeMultiplier = drawdownMgr.GetSizeMultiplier()
+		}
+		
 		if fused >= cfg.VeryPos {
 			intent = "BUY_5X"
-			usd = cfg.BaseUSD * 5
+			usd = cfg.BaseUSD * 5 * sizeMultiplier
 		} else if fused >= cfg.Positive {
 			intent = "BUY_1X"
-			usd = cfg.BaseUSD
+			usd = cfg.BaseUSD * sizeMultiplier
 		}
 	}
 

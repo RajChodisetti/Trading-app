@@ -87,6 +87,40 @@ type Portfolio struct {
 	PositionDecayDays           int     `yaml:"position_decay_days"`
 }
 
+type StopLoss struct {
+	Enabled               bool    `yaml:"enabled"`
+	DefaultStopLossPct    float64 `yaml:"default_stop_loss_pct"`
+	EmergencyStopLossPct  float64 `yaml:"emergency_stop_loss_pct"`
+	AllowAfterHours       bool    `yaml:"allow_after_hours"`
+	CooldownHours         int     `yaml:"cooldown_hours"`
+}
+
+type SectorLimits struct {
+	Enabled               bool               `yaml:"enabled"`
+	MaxSectorExposurePct  float64            `yaml:"max_sector_exposure_pct"`
+	SectorMap             map[string]string  `yaml:"sector_map"`
+}
+
+type Drawdown struct {
+	Enabled                      bool    `yaml:"enabled"`
+	DailyWarningPct              float64 `yaml:"daily_warning_pct"`
+	DailyPausePct                float64 `yaml:"daily_pause_pct"`
+	WeeklyWarningPct             float64 `yaml:"weekly_warning_pct"`
+	WeeklyPausePct               float64 `yaml:"weekly_pause_pct"`
+	SizeMultiplierOnWarningPct   float64 `yaml:"size_multiplier_on_warning_pct"`
+}
+
+type RiskControls struct {
+	StopLoss      StopLoss      `yaml:"stop_loss"`
+	SectorLimits  SectorLimits  `yaml:"sector_limits"`
+	Drawdown      Drawdown      `yaml:"drawdown"`
+}
+
+type Monitoring struct {
+	DashboardRecentTrades      int `yaml:"dashboard_recent_trades"`
+	HealthCheckIntervalMinutes int `yaml:"health_check_interval_minutes"`
+}
+
 type Root struct {
 	TradingMode       string            `yaml:"trading_mode"` // paper | live | dry-run
 	GlobalPause       bool              `yaml:"global_pause"`
@@ -101,6 +135,8 @@ type Root struct {
 	RuntimeOverrides  RuntimeOverrides  `yaml:"runtime_overrides"`
 	Security          Security          `yaml:"security"`
 	Portfolio         Portfolio         `yaml:"portfolio"`
+	RiskControls      RiskControls      `yaml:"risk_controls"`
+	Monitoring        Monitoring        `yaml:"monitoring"`
 	BaseUSD           float64           `yaml:"base_usd"`
 }
 

@@ -630,4 +630,210 @@ cleanup_slack_handler
 cleanup_mock_slack
 trap - EXIT
 
+# --- Case 10: Risk Controls (Stop-Loss, Sector Limits, Drawdown) ---
+echo "== Running: risk_controls =="
+
+# Case 10A: Stop-loss trigger test
+CASE10A_CONFIG="$TMP_DIR/config.case10a.yaml"
+sed "s|global_pause: true|global_pause: false|g; s|enabled: false|enabled: true|g" "$CFG" > "$CASE10A_CONFIG"
+
+# Create portfolio state with AAPL position at higher price to simulate loss
+PORTFOLIO_DIR="$TMP_DIR/portfolio_test"
+mkdir -p "$PORTFOLIO_DIR"
+cat > "$PORTFOLIO_DIR/state.json" << 'EOF'
+{
+  "version": 1,
+  "updated_at": "2025-08-23T14:00:00Z",
+  "positions": {
+    "AAPL": {
+      "quantity": 10,
+      "avg_entry_price": 220.0,
+      "entry_vwap": 220.0,
+      "current_notional": 2200.0,
+      "unrealized_pnl": 0.0,
+      "last_trade_at": "2025-08-23T13:00:00Z",
+      "trade_count_today": 1,
+      "realized_pnl_today": 0.0
+    }
+  },
+  "daily_stats": {
+    "date": "2025-08-23",
+    "total_exposure_usd": 2200.0,
+    "exposure_pct_capital": 11.0,
+    "new_exposure_today": 2200.0,
+    "trades_today": 1,
+    "pnl_today": 0.0
+  },
+  "capital_base": 20000.0
+}
+EOF
+
+# Update config to use test portfolio file
+sed -i.bak "s|state_file_path:.*|state_file_path: \"$PORTFOLIO_DIR/state.json\"|" "$CASE10A_CONFIG"
+
+# Copy case10 fixtures to main fixture files temporarily  
+cp fixtures/ticks.json fixtures/ticks.backup.json
+cp fixtures/news.json fixtures/news.backup.json
+cp fixtures/halts.json fixtures/halts.backup.json
+
+# Use case10_stop_loss fixtures
+cp fixtures/case10_stop_loss.json fixtures/news.json 
+cp fixtures/case10_ticks.json fixtures/ticks.json
+cp fixtures/case10_halts.json fixtures/halts.json
+
+# Run with case10_stop_loss fixture (AAPL drops to 206.80, triggering 6% stop-loss)
+$BIN -config "$CASE10A_CONFIG" >>"$TMP_DIR/case10a.out" 2>&1 || {
+  echo "binary exited non-zero for stop-loss test. Output:"; cat "$TMP_DIR/case10a.out"; exit 1;
+}
+
+# Check for stop-loss trigger in logs
+if grep -q "stop_loss_triggered" "$TMP_DIR/case10a.out"; then
+  echo "✅ Stop-loss trigger detected"
+else
+  echo "FAIL(case10a): stop-loss should have triggered for AAPL position"
+  exit 1
+fi
+
+# Case 10B: Sector limits test  
+echo "== Case 10B: Sector exposure limits =="
+CASE10B_CONFIG="$TMP_DIR/config.case10b.yaml"
+sed "s|global_pause: true|global_pause: false|g; s|enabled: false|enabled: true|g" "$CFG" > "$CASE10B_CONFIG"
+
+# Create portfolio state with high tech exposure to test sector limits
+cat > "$PORTFOLIO_DIR/state.json" << 'EOF'
+{
+  "version": 2,
+  "updated_at": "2025-08-23T14:00:00Z",
+  "positions": {
+    "AAPL": {
+      "quantity": 50,
+      "avg_entry_price": 220.0,
+      "entry_vwap": 220.0,
+      "current_notional": 11000.0,
+      "unrealized_pnl": 0.0,
+      "last_trade_at": "2025-08-23T13:00:00Z",
+      "trade_count_today": 1,
+      "realized_pnl_today": 0.0
+    },
+    "MSFT": {
+      "quantity": 20,
+      "avg_entry_price": 340.0,
+      "entry_vwap": 340.0,
+      "current_notional": 6800.0,
+      "unrealized_pnl": 0.0,
+      "last_trade_at": "2025-08-23T13:00:00Z",
+      "trade_count_today": 1,
+      "realized_pnl_today": 0.0
+    }
+  },
+  "daily_stats": {
+    "date": "2025-08-23",
+    "total_exposure_usd": 17800.0,
+    "exposure_pct_capital": 37.8,
+    "new_exposure_today": 17800.0,
+    "trades_today": 2,
+    "pnl_today": 0.0
+  },
+  "capital_base": 50000.0
+}
+EOF
+
+# Update config to use test portfolio file
+sed -i.bak "s|state_file_path:.*|state_file_path: \"$PORTFOLIO_DIR/state.json\"|" "$CASE10B_CONFIG"
+
+# Use case10_sector_limits fixtures
+cp fixtures/case10_sector_limits.json fixtures/news.json 
+jq '.ticks' fixtures/case10_sector_limits.json > fixtures/ticks.json
+jq '.halts' fixtures/case10_sector_limits.json > fixtures/halts.json
+
+$BIN -config "$CASE10B_CONFIG" >>"$TMP_DIR/case10b.out" 2>&1 || {
+  echo "binary exited non-zero for sector limits test. Output:"; cat "$TMP_DIR/case10b.out"; exit 1;
+}
+
+# Check for sector limit blocks
+grep -F '"event":"decision"' "$TMP_DIR/case10b.out" > "$TMP_DIR/case10b.jsonl" || true
+
+if [[ -s "$TMP_DIR/case10b.jsonl" ]]; then
+  # Check if any tech stock (NVDA/GOOGL) got blocked by sector_limit
+  sector_blocks=$(jq -r 'select(.event=="decision" and (.symbol=="NVDA" or .symbol=="GOOGL")) | select(.reason.gates_blocked[]? == "sector_limit") | .symbol' "$TMP_DIR/case10b.jsonl" | wc -l)
+  
+  if [[ "$sector_blocks" -gt 0 ]]; then
+    echo "✅ Sector limits working - blocked additional tech exposure"
+  else
+    echo "FAIL(case10b): sector limits should have blocked tech positions"
+    # Show debug info
+    jq -r 'select(.event=="decision") | "\(.symbol): \(.intent) - \(.reason.gates_blocked // [])"' "$TMP_DIR/case10b.jsonl" || true
+    exit 1
+  fi
+fi
+
+# Case 10C: Drawdown suspension test
+echo "== Case 10C: Drawdown suspension =="
+CASE10C_CONFIG="$TMP_DIR/config.case10c.yaml"
+sed "s|global_pause: true|global_pause: false|g; s|enabled: false|enabled: true|g" "$CFG" > "$CASE10C_CONFIG"
+
+# Create portfolio state with significant losses to trigger drawdown
+cat > "$PORTFOLIO_DIR/state.json" << 'EOF'
+{
+  "version": 3,
+  "updated_at": "2025-08-23T14:00:00Z",
+  "positions": {
+    "AAPL": {
+      "quantity": 100,
+      "avg_entry_price": 220.0,
+      "entry_vwap": 220.0,
+      "current_notional": 18000.0,
+      "unrealized_pnl": -4000.0,
+      "last_trade_at": "2025-08-23T13:00:00Z",
+      "trade_count_today": 1,
+      "realized_pnl_today": -1000.0
+    }
+  },
+  "daily_stats": {
+    "date": "2025-08-23",
+    "total_exposure_usd": 18000.0,
+    "exposure_pct_capital": 36.0,
+    "new_exposure_today": 18000.0,
+    "trades_today": 1,
+    "pnl_today": -1000.0
+  },
+  "capital_base": 50000.0
+}
+EOF
+
+# Update config to use test portfolio file  
+sed -i.bak "s|state_file_path:.*|state_file_path: \"$PORTFOLIO_DIR/state.json\"|" "$CASE10C_CONFIG"
+
+# Use case10_drawdown fixtures
+cp fixtures/case10_drawdown.json fixtures/news.json 
+jq '.ticks' fixtures/case10_drawdown.json > fixtures/ticks.json
+jq '.halts' fixtures/case10_drawdown.json > fixtures/halts.json
+
+$BIN -config "$CASE10C_CONFIG" >>"$TMP_DIR/case10c.out" 2>&1 || {
+  echo "binary exited non-zero for drawdown test. Output:"; cat "$TMP_DIR/case10c.out"; exit 1;
+}
+
+# Check for drawdown suspension
+grep -F '"event":"decision"' "$TMP_DIR/case10c.out" > "$TMP_DIR/case10c.jsonl" || true
+
+if [[ -s "$TMP_DIR/case10c.jsonl" ]]; then
+  drawdown_blocks=$(jq -r 'select(.event=="decision") | select(.reason.gates_blocked[]? == "drawdown_pause") | .symbol' "$TMP_DIR/case10c.jsonl" | wc -l)
+  
+  if [[ "$drawdown_blocks" -gt 0 ]]; then
+    echo "✅ Drawdown suspension working - blocked new positions"
+  else
+    echo "FAIL(case10c): drawdown should have suspended new positions"
+    # Show debug info
+    jq -r 'select(.event=="decision") | "\(.symbol): \(.intent) - \(.reason.gates_blocked // [])"' "$TMP_DIR/case10c.jsonl" || true
+    exit 1
+  fi
+fi
+
+echo "risk_controls: verified stop-loss, sector limits, and drawdown controls"
+
+# Restore original fixture files
+cp fixtures/ticks.backup.json fixtures/ticks.json 2>/dev/null || true
+cp fixtures/news.backup.json fixtures/news.json 2>/dev/null || true  
+cp fixtures/halts.backup.json fixtures/halts.json 2>/dev/null || true
+
 echo "OK: all tests passed."

@@ -1,14 +1,13 @@
 # TODO - Trading System Development
 
 ## Now (Current Session Focus)
-- [x] Session 8 complete: Slack alerts and operational controls
-- [x] Update documentation with Session 8 progress
-- [x] Create next session plan for Session 9
+- [x] Session 10 complete: Advanced Risk Controls & Real-Time Monitoring
+- [x] Update documentation with Session 10 progress
+- [x] Create next session plan for Session 11
 
 ## Next (Priority Queue) 
-- [ ] Session 9: Portfolio caps and cooldown gates
-- [ ] Session 10: Wire WebSocket/SSE streaming transport
-- [ ] Session 11: Drawdown monitoring and circuit breakers
+- [ ] Session 11: Wire WebSocket/SSE streaming transport
+- [ ] Session 12: Real adapter integrations (start with quotes)
 
 ## Later (Future Enhancements)
 - [ ] Drawdown monitoring and circuit breakers
@@ -26,3 +25,4 @@
 - [x] Session 6: Paper order outbox + idempotency (mock fills) (2025-08-21)
 - [x] Session 7: Wire stub HTTP polling ingestion (2025-08-22)
 - [x] Session 8: Slack alerts and operational controls (2025-08-22)
+- [x] Session 10: Advanced Risk Controls & Real-Time Monitoring (2025-08-23)

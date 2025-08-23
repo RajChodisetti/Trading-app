@@ -12,6 +12,7 @@ import (
 type Position struct {
 	Quantity         int     `json:"quantity"`          // Current position size (shares/contracts)
 	AvgEntryPrice    float64 `json:"avg_entry_price"`   // Average entry price
+	EntryVWAP        float64 `json:"entry_vwap"`        // Volume-weighted entry price for stop-loss
 	CurrentNotional  float64 `json:"current_notional"`  // Current position value
 	UnrealizedPnL    float64 `json:"unrealized_pnl"`    // Unrealized profit/loss
 	LastTradeAt      string  `json:"last_trade_at"`     // Timestamp of last trade
@@ -163,13 +164,19 @@ func (m *Manager) UpdatePosition(symbol string, quantity int, price float64, tim
 		// New position
 		pos.Quantity = quantity
 		pos.AvgEntryPrice = price
+		pos.EntryVWAP = price // Initialize VWAP with first trade price
 		pos.CurrentNotional = float64(quantity) * price
 	} else {
 		// Existing position
 		if (pos.Quantity > 0 && quantity > 0) || (pos.Quantity < 0 && quantity < 0) {
 			// Adding to position
 			totalCost := pos.AvgEntryPrice * float64(pos.Quantity) + price * float64(quantity)
-			pos.Quantity += quantity
+			totalQuantity := pos.Quantity + quantity
+			
+			// Update VWAP for stop-loss calculations
+			pos.EntryVWAP = totalCost / float64(totalQuantity)
+			
+			pos.Quantity = totalQuantity
 			pos.AvgEntryPrice = totalCost / float64(pos.Quantity)
 			pos.CurrentNotional = float64(pos.Quantity) * pos.AvgEntryPrice
 		} else {
@@ -323,4 +330,47 @@ func absInt(x int) int {
 		return -x
 	}
 	return x
+}
+
+// GetNAV calculates current Net Asset Value (capital + realized + unrealized P&L)
+func (m *Manager) GetNAV() float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	// Start with capital base
+	nav := m.state.CapitalBase
+	
+	// Add realized P&L from today
+	nav += m.state.DailyStats.PnLToday
+	
+	// Add unrealized P&L from all positions
+	for _, pos := range m.state.Positions {
+		nav += pos.UnrealizedPnL
+	}
+	
+	return nav
+}
+
+// GetPositionNotionals returns map of symbol to current notional value for sector exposure calculation
+func (m *Manager) GetPositionNotionals() map[string]float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	notionals := make(map[string]float64)
+	for symbol, pos := range m.state.Positions {
+		notionals[symbol] = pos.CurrentNotional
+	}
+	return notionals
+}
+
+// GetEntryVWAP returns the entry VWAP for a symbol (for stop-loss calculations)
+func (m *Manager) GetEntryVWAP(symbol string) (float64, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	pos, exists := m.state.Positions[symbol]
+	if !exists || pos.Quantity == 0 {
+		return 0, false
+	}
+	return pos.EntryVWAP, true
 }

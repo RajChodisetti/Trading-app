@@ -1,0 +1,60 @@
+{
+  "news": [
+    {
+      "id": "market-crash-1",
+      "tickers": ["AAPL", "MSFT", "GOOGL", "NVDA"],
+      "is_press_release": false,
+      "provider": "reuters",
+      "headline_hash": "market-selloff",
+      "published_at_utc": "2025-08-23T14:00:00Z"
+    }
+  ],
+  "ticks": [
+    {
+      "symbol": "AAPL",
+      "last": 180.00,
+      "vwap_5m": 190.50,
+      "rel_volume": 3.2,
+      "halted": false,
+      "premarket": false,
+      "postmarket": false,
+      "bid": 179.90,
+      "ask": 180.10
+    },
+    {
+      "symbol": "MSFT",
+      "last": 280.00,
+      "vwap_5m": 290.50,
+      "rel_volume": 2.8,
+      "halted": false,
+      "premarket": false,
+      "postmarket": false,
+      "bid": 279.90,
+      "ask": 280.10
+    },
+    {
+      "symbol": "GOOGL",
+      "last": 130.00,
+      "vwap_5m": 140.50,
+      "rel_volume": 2.5,
+      "halted": false,
+      "premarket": false,
+      "postmarket": false,
+      "bid": 129.90,
+      "ask": 130.10
+    },
+    {
+      "symbol": "NVDA",
+      "last": 380.00,
+      "vwap_5m": 400.50,
+      "rel_volume": 4.1,
+      "halted": false,
+      "premarket": false,
+      "postmarket": false,
+      "bid": 379.90,
+      "ask": 380.10
+    }
+  ],
+  "halts": [],
+  "earnings": []
+}

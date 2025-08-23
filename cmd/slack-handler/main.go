@@ -77,6 +77,7 @@ type Handler struct {
 	mu               sync.RWMutex
 	nonceCache       map[string]time.Time // nonce -> timestamp
 	metrics          HandlerMetrics
+	metricsEndpoint  string               // URL for metrics endpoint
 }
 
 type HandlerMetrics struct {
@@ -86,13 +87,14 @@ type HandlerMetrics struct {
 	CommandLatencyMs     map[string][]float64
 }
 
-func NewHandler(signingSecret string, allowedUsers []string, runtimePath string, portfolioMgr *portfolio.Manager) *Handler {
+func NewHandler(signingSecret string, allowedUsers []string, runtimePath string, portfolioMgr *portfolio.Manager, metricsEndpoint string) *Handler {
 	h := &Handler{
-		signingSecret: signingSecret,
-		allowedUsers:  allowedUsers,
-		runtimePath:   runtimePath,
-		portfolioMgr:  portfolioMgr,
-		nonceCache:    make(map[string]time.Time),
+		signingSecret:   signingSecret,
+		allowedUsers:    allowedUsers,
+		runtimePath:     runtimePath,
+		portfolioMgr:    portfolioMgr,
+		metricsEndpoint: metricsEndpoint,
+		nonceCache:      make(map[string]time.Time),
 		metrics: HandlerMetrics{
 			CommandLatencyMs: make(map[string][]float64),
 		},
@@ -515,10 +517,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		response = h.handleExposure(cmd)
 	case "/limits":
 		response = h.handleLimits(cmd)
+	case "/dashboard":
+		response = h.handleDashboard(cmd)
 	default:
 		response = SlashResponse{
 			ResponseType: "ephemeral",
-			Text:         "❌ Unknown command. Available: /pause, /resume, /freeze, /status, /position, /exposure, /limits",
+			Text:         "❌ Unknown command. Available: /pause, /resume, /freeze, /status, /position, /exposure, /limits, /dashboard",
 		}
 	}
 	
@@ -756,6 +760,238 @@ func (h *Handler) handleLimits(cmd SlashCommand) SlashResponse {
 	}
 }
 
+// handleDashboard shows comprehensive system dashboard with NAV, P&L, exposures, and health status  
+func (h *Handler) handleDashboard(cmd SlashCommand) SlashResponse {
+	if h.portfolioMgr == nil {
+		return SlashResponse{
+			ResponseType: "ephemeral",
+			Text:         "❌ Portfolio management is not enabled",
+		}
+	}
+
+	// Load config for limits and sector mapping
+	cfg, err := config.Load("config/config.yaml")
+	if err != nil {
+		return SlashResponse{
+			ResponseType: "ephemeral",
+			Text:         fmt.Sprintf("❌ Error loading config: %v", err),
+		}
+	}
+
+	// Get current portfolio state
+	nav := h.portfolioMgr.GetNAV()
+	stats := h.portfolioMgr.GetDailyStats()
+	positions := h.portfolioMgr.GetAllPositions()
+	
+	// Calculate sector exposures if sector limits are enabled
+	sectorExposures := make(map[string]float64)
+	if cfg.RiskControls.SectorLimits.Enabled && len(cfg.RiskControls.SectorLimits.SectorMap) > 0 {
+		notionals := h.portfolioMgr.GetPositionNotionals()
+		
+		// Group positions by sector
+		for symbol, notional := range notionals {
+			if sector, exists := cfg.RiskControls.SectorLimits.SectorMap[symbol]; exists {
+				sectorExposures[sector] += abs(notional)
+			} else {
+				sectorExposures["other"] += abs(notional)
+			}
+		}
+		
+		// Convert to percentages of NAV
+		for sector, exposure := range sectorExposures {
+			sectorExposures[sector] = (exposure / nav) * 100
+		}
+	}
+	
+	// Get runtime overrides to check active gates
+	ro, err := h.loadRuntimeOverrides()
+	if err != nil {
+		ro = RuntimeOverrides{} // Continue with empty overrides
+	}
+	
+	// Determine health color based on thresholds
+	healthColor := getHealthColor(stats.ExposurePctCapital, cfg.Portfolio.MaxPortfolioExposurePct, sectorExposures, cfg.RiskControls.SectorLimits.MaxSectorExposurePct, ro.GlobalPause)
+	healthStatus := getHealthStatus(healthColor)
+	
+	// Format sector exposures
+	sectorText := "N/A"
+	if len(sectorExposures) > 0 {
+		var sectors []string
+		for sector, pct := range sectorExposures {
+			if pct > 0.1 { // Only show sectors with >0.1% exposure
+				sectors = append(sectors, fmt.Sprintf("%s: %.1f%%", sector, pct))
+			}
+		}
+		if len(sectors) > 0 {
+			sectorText = strings.Join(sectors, "\n")
+		}
+	}
+	
+	// Get active gates
+	activeGates := []string{}
+	if ro.GlobalPause != nil && *ro.GlobalPause {
+		activeGates = append(activeGates, "global_pause")
+	}
+	
+	// Check for frozen symbols
+	now := time.Now()
+	activeFreezes := []string{}
+	for _, fs := range ro.FrozenSymbols {
+		if untilTime, err := time.Parse(time.RFC3339, fs.UntilUTC); err == nil {
+			if now.Before(untilTime) {
+				remaining := int(time.Until(untilTime).Minutes())
+				activeFreezes = append(activeFreezes, fmt.Sprintf("%s (%dm)", fs.Symbol, remaining))
+			}
+		}
+	}
+	if len(activeFreezes) > 0 {
+		activeGates = append(activeGates, fmt.Sprintf("frozen: %s", strings.Join(activeFreezes, ", ")))
+	}
+	
+	gatesText := "None"
+	if len(activeGates) > 0 {
+		gatesText = strings.Join(activeGates, "\n")
+	}
+	
+	// Get recent trades (last 5)
+	recentTrades := getRecentTrades(positions, 5)
+	
+	return SlashResponse{
+		ResponseType: "ephemeral",
+		Text:         fmt.Sprintf("📊 Trading System Dashboard - %s", healthStatus),
+		Attachments: []struct {
+			Color  string `json:"color,omitempty"`
+			Fields []struct {
+				Title string `json:"title"`
+				Value string `json:"value"`
+				Short bool   `json:"short"`
+			} `json:"fields,omitempty"`
+		}{
+			{
+				Color: healthColor,
+				Fields: []struct {
+					Title string `json:"title"`
+					Value string `json:"value"`
+					Short bool   `json:"short"`
+				}{
+					{Title: "Current NAV", Value: fmt.Sprintf("$%.2f", nav), Short: true},
+					{Title: "Daily P&L", Value: fmt.Sprintf("$%.2f", stats.PnLToday), Short: true},
+					{Title: "Total Exposure", Value: fmt.Sprintf("$%.2f (%.1f%%)", stats.TotalExposureUSD, stats.ExposurePctCapital), Short: true},
+					{Title: "Trades Today", Value: fmt.Sprintf("%d", stats.TradesToday), Short: true},
+					{Title: "Sector Exposures", Value: sectorText, Short: false},
+					{Title: "Active Gates", Value: gatesText, Short: false},
+					{Title: "Recent Trades", Value: recentTrades, Short: false},
+					{Title: "Last Updated", Value: time.Now().Format("2006-01-02 15:04:05 MST"), Short: true},
+				},
+			},
+		},
+	}
+}
+
+// getHealthColor determines dashboard color based on system state
+func getHealthColor(exposurePct, maxExposure float64, sectorExposures map[string]float64, maxSectorExposure float64, globalPause *bool) string {
+	// Red: pause active or critical thresholds
+	if globalPause != nil && *globalPause {
+		return "danger"
+	}
+	
+	// Check critical exposure levels (>90% of limits)
+	if exposurePct > maxExposure*0.9 {
+		return "danger"
+	}
+	
+	for _, sectorPct := range sectorExposures {
+		if sectorPct > maxSectorExposure*0.9 {
+			return "danger"
+		}
+	}
+	
+	// Yellow: warning levels (>70% of limits)
+	if exposurePct > maxExposure*0.7 {
+		return "warning"
+	}
+	
+	for _, sectorPct := range sectorExposures {
+		if sectorPct > maxSectorExposure*0.7 {
+			return "warning"
+		}
+	}
+	
+	return "good" // Green: all clear
+}
+
+// getHealthStatus returns human-readable health status
+func getHealthStatus(color string) string {
+	switch color {
+	case "danger":
+		return "🔴 Red"
+	case "warning":
+		return "🟡 Yellow"
+	default:
+		return "🟢 Green"
+	}
+}
+
+// getRecentTrades formats recent trading activity
+func getRecentTrades(positions map[string]portfolio.Position, limit int) string {
+	type tradeInfo struct {
+		Symbol    string
+		TradeTime time.Time
+		Trades    int
+		PnL       float64
+	}
+	
+	var trades []tradeInfo
+	for symbol, pos := range positions {
+		if pos.TradeCountToday > 0 && pos.LastTradeAt != "" {
+			if tradeTime, err := time.Parse(time.RFC3339, pos.LastTradeAt); err == nil {
+				trades = append(trades, tradeInfo{
+					Symbol:    symbol,
+					TradeTime: tradeTime,
+					Trades:    pos.TradeCountToday,
+					PnL:       pos.RealizedPnLToday,
+				})
+			}
+		}
+	}
+	
+	if len(trades) == 0 {
+		return "No trades today"
+	}
+	
+	// Sort by trade time (most recent first)
+	for i := 0; i < len(trades)-1; i++ {
+		for j := i + 1; j < len(trades); j++ {
+			if trades[i].TradeTime.Before(trades[j].TradeTime) {
+				trades[i], trades[j] = trades[j], trades[i]
+			}
+		}
+	}
+	
+	// Format top trades
+	var result []string
+	count := limit
+	if len(trades) < count {
+		count = len(trades)
+	}
+	
+	for i := 0; i < count; i++ {
+		trade := trades[i]
+		result = append(result, fmt.Sprintf("%s: %d trades, $%.2f P&L (%s)", 
+			trade.Symbol, trade.Trades, trade.PnL, 
+			trade.TradeTime.Format("15:04")))
+	}
+	
+	return strings.Join(result, "\n")
+}
+
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	h.mu.RLock()
 	metrics := h.metrics
@@ -826,7 +1062,8 @@ func main() {
 		}
 	}
 	
-	handler := NewHandler(signingSecret, userList, runtimePath, portfolioMgr)
+	metricsEndpoint := "http://127.0.0.1:8090/metrics" // Default metrics endpoint
+	handler := NewHandler(signingSecret, userList, runtimePath, portfolioMgr, metricsEndpoint)
 	
 	mux := http.NewServeMux()
 	mux.Handle("/slack/commands", handler)

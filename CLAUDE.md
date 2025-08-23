@@ -4,10 +4,10 @@ A trustworthy, low-latency trading backend that reacts to credible market-moving
 
 ## Current Implementation Status
 
-### ✅ Completed (Sessions 1-8)
+### ✅ Completed (Sessions 1-10)
 - **Decision Engine**: Core gates (global_pause, halt, session, liquidity, corroboration, earnings_embargo, frozen) and threshold mapping
 - **Structured Logging**: JSON decision reasons with fused scores and gate details
-- **Testing Framework**: End-to-end integration tests with 8 comprehensive scenarios covering all gate logic, wire ingestion, and Slack integration
+- **Testing Framework**: End-to-end integration tests with 10 comprehensive scenarios covering all gate logic, wire ingestion, Slack integration, and risk controls
 - **Observability**: Metrics collection and HTTP endpoint with gate-specific counters, decision latency tracking, and Slack metrics
 - **Safety Rails**: Paper mode with global pause protection, environment variable overrides, and test isolation
 - **PR Corroboration**: Soft gate requiring editorial confirmation within 15-minute window for PR-driven decisions
@@ -15,6 +15,7 @@ A trustworthy, low-latency trading backend that reacts to credible market-moving
 - **Paper Trading Outbox**: Transactional order persistence with mock fills, idempotency, and JSONL audit trail
 - **Wire Protocol Ingestion**: HTTP polling client with cursor-based streaming, exponential backoff, and bounded execution
 - **Slack Alerts & Controls**: Real-time decision alerts with rate limiting, slash commands for operational control (/pause, /resume, /freeze), and runtime configuration overrides
+- **Advanced Risk Controls**: Stop-loss with 24h cooldown, sector exposure limits (40% max), drawdown monitoring (2%/3% daily thresholds), and Slack dashboard for real-time portfolio monitoring
 
 ### 🚧 Current Architecture
 
