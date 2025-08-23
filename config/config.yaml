@@ -83,7 +83,20 @@ paper:
 
 wire:
   enabled: false
-  base_url: "http://localhost:8091"
+  base_url: "http://127.0.0.1:8091"
+  transport: "sse"                  # "sse" or "http"
+  timeout_seconds: 30
+  max_events: -1                    # -1 = unlimited, for bounded test runs
+  max_duration_seconds: -1          # -1 = unlimited, for bounded test runs
+  reconnect:
+    initial_delay_ms: 1000
+    max_delay_ms: 16000
+    max_attempts: -1                # -1 = infinite
+    jitter_ms: 250
+  heartbeat_seconds: 10
+  max_channel_buffer: 10000
+  fallback_to_http_after_failures: 5
+  # Legacy HTTP polling settings (backward compatibility)
   poll_interval_ms: 1000
   timeout_ms: 5000
   max_retries: 3

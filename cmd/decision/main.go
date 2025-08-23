@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"github.com/Rajchodisetti/trading-app/internal/outbox"
 	"github.com/Rajchodisetti/trading-app/internal/portfolio"
 	"github.com/Rajchodisetti/trading-app/internal/risk"
+	"github.com/Rajchodisetti/trading-app/internal/transport"
 )
 
 type haltsFile struct {
@@ -540,16 +542,47 @@ func main() {
 	var eventsProcessed int
 	
 	if cfg.Wire.Enabled {
-		// Wire mode: poll data from streaming endpoint
-		wireClient := NewWireClient(cfg.Wire.BaseURL, cfg.Wire.TimeoutMs)
+		// Wire mode: streaming or polling transport
+		transportConfig := transport.Config{
+			BaseURL:                     cfg.Wire.BaseURL,
+			Transport:                   cfg.Wire.Transport,
+			Timeout:                     time.Duration(cfg.Wire.TimeoutSeconds) * time.Second,
+			MaxEvents:                   cfg.Wire.MaxEvents,
+			MaxDuration:                 time.Duration(cfg.Wire.MaxDurationSeconds) * time.Second,
+			HeartbeatSeconds:            cfg.Wire.HeartbeatSeconds,
+			MaxChannelBuffer:            cfg.Wire.MaxChannelBuffer,
+			FallbackAfterFailures:       cfg.Wire.FallbackToHttpAfterFailures,
+			Reconnect: transport.ReconnectConfig{
+				InitialDelayMs: cfg.Wire.Reconnect.InitialDelayMs,
+				MaxDelayMs:     cfg.Wire.Reconnect.MaxDelayMs,
+				MaxAttempts:    cfg.Wire.Reconnect.MaxAttempts,
+				JitterMs:       cfg.Wire.Reconnect.JitterMs,
+			},
+		}
+		
+		// Apply command line overrides for bounded test runs
+		if maxEvents > 0 {
+			transportConfig.MaxEvents = maxEvents
+		}
+		if durationSeconds > 0 {
+			transportConfig.MaxDuration = time.Duration(durationSeconds) * time.Second
+		}
+		
+		wireClient, err := transport.NewClient(transportConfig)
+		if err != nil {
+			log.Fatalf("failed to create wire client: %v", err)
+		}
+		defer wireClient.Close()
 		
 		observ.Log("wire_startup", map[string]any{
-			"base_url": cfg.Wire.BaseURL,
-			"poll_interval_ms": cfg.Wire.PollIntervalMs,
+			"base_url":   cfg.Wire.BaseURL,
+			"transport":  cfg.Wire.Transport,
+			"max_events": transportConfig.MaxEvents,
+			"max_duration_sec": transportConfig.MaxDuration.Seconds(),
 		})
 		
-		// Wait for wire server health
-		if err := wireClient.WaitForHealth(); err != nil {
+		// Wait for wire server health (fallback to basic HTTP check)
+		if err := waitForWireHealth(cfg.Wire.BaseURL); err != nil {
 			log.Fatalf("wire health check failed: %v", err)
 		}
 		

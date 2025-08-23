@@ -43,13 +43,30 @@ type Paper struct {
 }
 
 type Wire struct {
-	Enabled         bool   `yaml:"enabled"`
-	BaseURL         string `yaml:"base_url"`
+	Enabled                     bool          `yaml:"enabled"`
+	BaseURL                     string        `yaml:"base_url"`
+	Transport                   string        `yaml:"transport"`                     // "sse" or "http"
+	TimeoutSeconds              int           `yaml:"timeout_seconds"`
+	MaxEvents                   int           `yaml:"max_events"`                    // -1 = unlimited
+	MaxDurationSeconds          int           `yaml:"max_duration_seconds"`          // -1 = unlimited
+	Reconnect                   WireReconnect `yaml:"reconnect"`
+	HeartbeatSeconds            int           `yaml:"heartbeat_seconds"`
+	MaxChannelBuffer            int           `yaml:"max_channel_buffer"`
+	FallbackToHttpAfterFailures int           `yaml:"fallback_to_http_after_failures"`
+	
+	// Legacy HTTP polling settings (for backward compatibility)
 	PollIntervalMs  int    `yaml:"poll_interval_ms"`
 	TimeoutMs       int    `yaml:"timeout_ms"`
 	MaxRetries      int    `yaml:"max_retries"`
 	BackoffBaseMs   int    `yaml:"backoff_base_ms"`
 	BackoffMaxMs    int    `yaml:"backoff_max_ms"`
+}
+
+type WireReconnect struct {
+	InitialDelayMs int `yaml:"initial_delay_ms"`
+	MaxDelayMs     int `yaml:"max_delay_ms"`
+	MaxAttempts    int `yaml:"max_attempts"`    // -1 = infinite
+	JitterMs       int `yaml:"jitter_ms"`
 }
 
 type Slack struct {

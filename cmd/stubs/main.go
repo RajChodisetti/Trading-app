@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"time"
+	
+	"github.com/Rajchodisetti/trading-app/internal/stubs"
 )
 
 // ---- payload shapes (match fixtures) ----
@@ -256,13 +258,33 @@ func main() {
 	flag.Parse()
 	
 	if streamMode {
-		// Wire streaming mode - single port with /stream endpoint
+		// Wire streaming mode - single port with /stream endpoint for both HTTP and SSE
 		log.Printf("Starting wire streaming mode on port %s", port)
 		loadFixtures()
 		
+		// Load events using new loader
+		events, err := stubs.LoadFixtureEvents()
+		if err != nil {
+			log.Fatalf("Failed to load fixture events: %v", err)
+		}
+		log.Printf("Loaded %d fixture events for streaming", len(events))
+		
+		// Create SSE server
+		sseServer := stubs.NewSSEServer(events)
+		
 		mux := http.NewServeMux()
 		mux.HandleFunc("/health", health)
-		mux.HandleFunc("/stream", streamHandler)
+		mux.HandleFunc("/stream", func(w http.ResponseWriter, r *http.Request) {
+			// Check if this is an SSE request
+			if r.Header.Get("Accept") == "text/event-stream" {
+				// SSE streaming
+				sseServer.ServeHTTP(w, r)
+			} else {
+				// HTTP polling (backward compatibility)
+				streamHandler(w, r)
+			}
+		})
+		mux.HandleFunc("/backfill", sseServer.ServeBackfill)
 		
 		addr := ":" + port
 		log.Printf("Wire stub listening on %s", addr)
