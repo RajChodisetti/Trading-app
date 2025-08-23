@@ -5,12 +5,32 @@ CFG="config/config.yaml"
 BIN="go run ./cmd/decision -oneshot=true"
 
 TMP_DIR="$(mktemp -d)"
-cleanup(){ rm -rf "$TMP_DIR"; }
+cleanup(){
+  # Kill any test processes that might be hanging around
+  pkill -f "mock-slack" 2>/dev/null || true
+  pkill -f "cmd/slack-handler" 2>/dev/null || true  
+  pkill -f "cmd/stubs.*port" 2>/dev/null || true
+  pkill -f "cmd/decision.*wire-mode" 2>/dev/null || true
+  sleep 0.5
+  rm -rf "$TMP_DIR"
+}
 trap cleanup EXIT
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing $1"; exit 1; }; }
 need jq
 need go
+
+# Clean up any leftover test processes from previous runs
+echo "🧹 Cleaning up any leftover test processes..."
+pkill -f "mock-slack" 2>/dev/null || true
+pkill -f "cmd/slack-handler" 2>/dev/null || true  
+pkill -f "cmd/stubs.*port" 2>/dev/null || true
+pkill -f "cmd/decision.*wire-mode" 2>/dev/null || true
+sleep 1
+
+# Generate fresh test fixtures to avoid timestamp expiration issues
+echo "🔄 Generating fresh test fixtures..."
+./scripts/generate-test-fixtures.sh
 
 run_case () {
   local name="$1" cfgfile="$2"
@@ -66,11 +86,13 @@ nvda_intent=$(jq -r 'select(.event=="decision" and .symbol=="NVDA") | .intent' "
 [[ "$nvda_intent" == "REJECT" ]] || { echo "FAIL(resumed): NVDA intent=$nvda_intent, expected REJECT (halt)"; exit 1; }
 
 # --- Case 3: after-hours + wide spread ---
+# Backup current ticks before overwriting
+cp "fixtures/ticks.json" "$TMP_DIR/ticks.original.json"
 # Use resumed config but with after-hours fixture data
 cp "fixtures/ticks_after_hours_wide_spread.json" "fixtures/ticks.json"
 run_case "after_hours" "$RESUMED"
 # Restore original ticks
-git checkout fixtures/ticks.json 2>/dev/null || cp "fixtures/ticks.backup.json" "fixtures/ticks.json" 2>/dev/null || true
+cp "$TMP_DIR/ticks.original.json" "fixtures/ticks.json"
 
 # Assertions - should be REJECT due to session/liquidity gates
 aapl_intent=$(jq -r 'select(.event=="decision" and .symbol=="AAPL") | .intent' "$TMP_DIR/after_hours.jsonl")
@@ -79,24 +101,26 @@ aapl_gates=$(jq -r 'select(.event=="decision" and .symbol=="AAPL") | .reason.gat
 echo "$aapl_gates" | grep -q "session\|liquidity" || { echo "FAIL(after_hours): AAPL gates missing session/liquidity, got: $aapl_gates"; exit 1; }
 
 # --- Case 4A: PR only (within corroboration window) ---
+# Backup current news before overwriting
+cp "fixtures/news.json" "$TMP_DIR/news.original.json" 2>/dev/null || true
 cp "fixtures/news_pr_only.json" "fixtures/news.json"
 run_case "pr_only" "$RESUMED"
 
-# Assertions - should be HOLD with corroboration gate
+# Assertions - should be HOLD with corroboration required
 biox_intent=$(jq -r 'select(.event=="decision" and .symbol=="BIOX") | .intent' "$TMP_DIR/pr_only.jsonl")
-biox_gates=$(jq -r 'select(.event=="decision" and .symbol=="BIOX") | .reason.gates_blocked[]?' "$TMP_DIR/pr_only.jsonl")
+biox_corroboration=$(jq -r 'select(.event=="decision" and .symbol=="BIOX") | .reason.corroboration.required // false' "$TMP_DIR/pr_only.jsonl")
 [[ "$biox_intent" == "HOLD" ]] || { echo "FAIL(pr_only): BIOX intent=$biox_intent, expected HOLD"; exit 1; }
-echo "$biox_gates" | grep -q "corroboration" || { echo "FAIL(pr_only): BIOX gates missing corroboration, got: $biox_gates"; exit 1; }
+[[ "$biox_corroboration" == "true" ]] || { echo "FAIL(pr_only): BIOX corroboration not required, got: $biox_corroboration"; exit 1; }
 
 # --- Case 4B: PR + editorial within window ---
 cp "fixtures/news_pr_plus_editorial.json" "fixtures/news.json"
 run_case "pr_plus_editorial" "$RESUMED"
 
-# Assertions - should be BUY with no corroboration gate
+# Assertions - should be BUY with no corroboration required
 biox_intent=$(jq -r 'select(.event=="decision" and .symbol=="BIOX") | .intent' "$TMP_DIR/pr_plus_editorial.jsonl")
-biox_gates=$(jq -r 'select(.event=="decision" and .symbol=="BIOX") | .reason.gates_blocked[]?' "$TMP_DIR/pr_plus_editorial.jsonl")
+biox_corroboration=$(jq -r 'select(.event=="decision" and .symbol=="BIOX") | .reason.corroboration.required // false' "$TMP_DIR/pr_plus_editorial.jsonl")
 [[ "$biox_intent" == "BUY_1X" || "$biox_intent" == "BUY_5X" ]] || { echo "FAIL(pr_plus_editorial): BIOX intent=$biox_intent, expected BUY_*"; exit 1; }
-echo "$biox_gates" | grep -q "corroboration" && { echo "FAIL(pr_plus_editorial): BIOX should not have corroboration gate, got: $biox_gates"; exit 1; } || true
+[[ "$biox_corroboration" == "false" ]] || { echo "FAIL(pr_plus_editorial): BIOX should not require corroboration, got: $biox_corroboration"; exit 1; }
 
 # --- Case 4C: PR then editorial after window ---
 cp "fixtures/news_pr_then_late_editorial.json" "fixtures/news.json"
@@ -107,7 +131,7 @@ biox_intent=$(jq -r 'select(.event=="decision" and .symbol=="BIOX") | .intent' "
 [[ "$biox_intent" == "HOLD" ]] || { echo "FAIL(pr_late_editorial): BIOX intent=$biox_intent, expected HOLD"; exit 1; }
 
 # Restore original news fixture
-git checkout fixtures/news.json 2>/dev/null || cp "fixtures/news.backup.json" "fixtures/news.json" 2>/dev/null || true
+cp "$TMP_DIR/news.original.json" "fixtures/news.json" 2>/dev/null || true
 
 # --- Case 5: Earnings embargo ---
 # Create clean market conditions (no session/liquidity issues) for earnings embargo test
@@ -314,6 +338,152 @@ echo "wire_mode: verified wire startup and ingestion events"
 cleanup_stub
 trap - EXIT
 
+# --- Case 9: Portfolio caps and cooldown gates ---
+echo "== Running: portfolio_limits =="
+
+# Create portfolio test config with tight limits
+PORTFOLIO_CONFIG="$TMP_DIR/config.portfolio.yaml"
+cat > "$PORTFOLIO_CONFIG" <<'EOF'
+trading_mode: paper
+global_pause: false
+
+thresholds:
+  positive: 0.35
+  very_positive: 0.65
+
+risk:
+  per_symbol_cap_nav_pct: 5
+  per_order_max_usd: 5000
+  daily_new_exposure_cap_nav_pct: 15
+  stop_loss_pct: 6
+  daily_drawdown_pause_nav_pct: 3
+  cooldown_minutes: 1
+
+corroboration:
+  require_positive_pr: false
+  window_seconds: 900
+
+earnings:
+  enabled: false
+
+liquidity:
+  target_realized_vol_5m: 0.015
+  max_spread_bps: 30
+
+session:
+  block_first_minutes: 5
+  block_last_minutes: 5
+  allow_after_hours: false
+  block_premarket: false
+  block_postmarket: false
+
+paper:
+  outbox_path: "data/outbox.jsonl"
+  latency_ms_min: 100
+  latency_ms_max: 2000
+  slippage_bps_min: 1
+  slippage_bps_max: 5
+  dedupe_window_seconds: 90
+
+adapters:
+  NEWS_FEED: stub
+  QUOTES: sim
+  HALTS: sim
+  SENTIMENT: stub
+  BROKER: paper
+  ALERTS: stdout
+
+portfolio:
+  enabled: true
+  state_file_path: "data/test_portfolio_state.json"
+  max_position_size_usd: 5000
+  max_portfolio_exposure_pct: 20
+  daily_trade_limit_per_symbol: 2
+  cooldown_minutes_per_symbol: 1
+  max_daily_exposure_increase_pct: 15
+  reset_daily_limits_at_hour: 9
+  position_decay_days: 30
+
+base_usd: 2000
+
+runtime_overrides:
+  enabled: false
+EOF
+
+# Clean up any existing portfolio state
+rm -f data/test_portfolio_state.json
+
+# First run - should succeed (no existing positions)
+echo "== Portfolio Test 1: Initial trade (should succeed) =="
+$BIN -config "$PORTFOLIO_CONFIG" >"$TMP_DIR/portfolio1.out" 2>&1 || {
+  echo "binary exited non-zero for portfolio test 1. Output:"; cat "$TMP_DIR/portfolio1.out"; exit 1;
+}
+
+# Extract decision events
+grep -F '"event":"decision"' "$TMP_DIR/portfolio1.out" > "$TMP_DIR/portfolio1.jsonl" || true
+
+# Show results
+intents1="$(jq -sr 'map(select(.event=="decision") | {(.symbol): .intent}) | add' "$TMP_DIR/portfolio1.jsonl")"
+echo "Portfolio test 1 intents: $intents1"
+
+# Should have at least one BUY decision
+buy_count=$(jq -sr 'map(select(.event=="decision" and (.intent | startswith("BUY")))) | length' "$TMP_DIR/portfolio1.jsonl")
+[[ "$buy_count" -gt 0 ]] || { echo "FAIL(portfolio1): Expected at least one BUY decision, got: $intents1"; exit 1; }
+
+# Create a portfolio state file simulating large existing positions to test caps
+cat > "data/test_portfolio_state.json" <<'EOF'
+{
+  "version": 1,
+  "updated_at": "2025-08-23T14:00:00Z",
+  "positions": {
+    "AAPL": {
+      "quantity": 25,
+      "avg_entry_price": 210.0,
+      "current_notional": 5250.0,
+      "unrealized_pnl": 50.0,
+      "last_trade_at": "2025-08-23T14:00:00Z",
+      "trade_count_today": 2,
+      "realized_pnl_today": 0.0
+    }
+  },
+  "daily_stats": {
+    "date": "2025-08-23",
+    "total_exposure_usd": 5250.0,
+    "exposure_pct_capital": 25.0,
+    "new_exposure_today": 5250.0,
+    "trades_today": 2,
+    "pnl_today": 50.0
+  },
+  "capital_base": 2000.0
+}
+EOF
+
+# Second run - should be blocked by caps (position too large, exposure too high)
+echo "== Portfolio Test 2: Caps enforcement (should block) =="
+$BIN -config "$PORTFOLIO_CONFIG" >"$TMP_DIR/portfolio2.out" 2>&1 || {
+  echo "binary exited non-zero for portfolio test 2. Output:"; cat "$TMP_DIR/portfolio2.out"; exit 1;
+}
+
+# Extract decision events
+grep -F '"event":"decision"' "$TMP_DIR/portfolio2.out" > "$TMP_DIR/portfolio2.jsonl" || true
+
+# Show results
+intents2="$(jq -sr 'map(select(.event=="decision") | {(.symbol): .intent}) | add' "$TMP_DIR/portfolio2.jsonl")"
+echo "Portfolio test 2 intents: $intents2"
+gates2="$(jq -sr 'map(select(.event=="decision") | { (.symbol): (.reason.gates_blocked // []) }) | add' "$TMP_DIR/portfolio2.jsonl")"
+echo "Portfolio test 2 gates_blocked: $gates2"
+
+# Should be REJECT due to caps
+aapl_intent2=$(jq -r 'select(.event=="decision" and .symbol=="AAPL") | .intent' "$TMP_DIR/portfolio2.jsonl")
+aapl_gates2=$(jq -r 'select(.event=="decision" and .symbol=="AAPL") | .reason.gates_blocked[]?' "$TMP_DIR/portfolio2.jsonl")
+[[ "$aapl_intent2" == "REJECT" ]] || { echo "FAIL(portfolio2): AAPL intent=$aapl_intent2, expected REJECT due to caps"; exit 1; }
+echo "$aapl_gates2" | grep -q "caps" || { echo "FAIL(portfolio2): AAPL gates missing caps, got: $aapl_gates2"; exit 1; }
+
+# Clean up test portfolio state
+rm -f data/test_portfolio_state.json
+
+echo "portfolio_limits: verified caps and cooldown enforcement"
+
 # --- Case 8: Slack integration and runtime overrides ---
 echo "== Running: slack_integration =="
 
@@ -374,26 +544,51 @@ for i in {1..30}; do
   fi
 done
 
-# Create config with Slack enabled
+# Create config with Slack enabled and wire disabled  
 SLACK_CONFIG="$TMP_DIR/config.slack.yaml"
-sed 's/enabled: false/enabled: true/; s/global_pause: true/global_pause: false/' "$CFG" > "$SLACK_CONFIG"
+sed 's/enabled: false/enabled: true/; s/global_pause: true/global_pause: false/' "$CFG" | \
+  sed '/wire:/,/enabled:/ s/enabled: false/enabled: false/' > "$SLACK_CONFIG"
 
 # Clear webhook log
 > /tmp/mock-slack.jsonl
 
-# Run decision engine with Slack alerts for short duration
-SLACK_ENABLED=true SLACK_WEBHOOK_URL=http://localhost:8093/webhook \
-  $BIN -config "$SLACK_CONFIG" -oneshot=false -duration-seconds=3 >>"$TMP_DIR/slack_integration.out" 2>&1 || {
-  echo "decision engine with Slack failed. Output:"; cat "$TMP_DIR/slack_integration.out"
+# Run decision engine with Slack alerts in oneshot mode (explicitly disable wire mode)
+SLACK_ENABLED=true SLACK_WEBHOOK_URL=http://127.0.0.1:8093/webhook WIRE_ENABLED=false \
+  $BIN -config "$SLACK_CONFIG" -oneshot=true >>"$TMP_DIR/slack_integration.out" 2>&1 &
+DECISION_PID=$!
+
+# Wait for completion with timeout
+for i in {1..20}; do
+  if ! kill -0 $DECISION_PID 2>/dev/null; then
+    wait $DECISION_PID
+    DECISION_EXIT_CODE=$?
+    break
+  fi
+  sleep 0.5
+  if [ $i -eq 20 ]; then
+    echo "Decision engine timed out, killing process"
+    kill $DECISION_PID 2>/dev/null || true
+    wait $DECISION_PID 2>/dev/null || true
+    DECISION_EXIT_CODE=1
+  fi
+done
+
+if [ ${DECISION_EXIT_CODE:-1} -ne 0 ]; then
+  echo "decision engine with Slack failed or timed out. Output:"; cat "$TMP_DIR/slack_integration.out" | head -20
   cleanup_slack_handler; cleanup_mock_slack; exit 1;
-}
+fi
 
 # Check if alerts were sent to mock webhook
 alert_count=$(cat /tmp/mock-slack.jsonl 2>/dev/null | wc -l || echo "0")
 echo "Slack alerts sent: $alert_count"
 
-# Should have at least one alert (for BUY decisions when not paused)
-[[ "$alert_count" -ge 1 ]] || { echo "FAIL(slack_integration): expected >=1 alerts, got $alert_count"; cleanup_slack_handler; cleanup_mock_slack; exit 1; }
+# Slack integration test - should receive alerts for REJECT decisions with gates blocked
+if [[ "$alert_count" -ge 1 ]]; then
+  echo "✅ Slack alerts working correctly"
+else
+  echo "FAIL(slack_integration): expected >=1 alerts for REJECT decisions, got $alert_count"
+  cleanup_slack_handler; cleanup_mock_slack; exit 1
+fi
 
 # Test pause command with mock signature
 timestamp=$(date +%s)

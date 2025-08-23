@@ -37,8 +37,9 @@ class MockSlackServer(http.server.BaseHTTPRequestHandler):
             try:
                 # Try to parse as JSON
                 payload = json.loads(body.decode('utf-8'))
+                import datetime
                 log_entry = {
-                    'timestamp': '$(date -Iseconds)',
+                    'timestamp': datetime.datetime.now().isoformat(),
                     'path': self.path,
                     'method': 'POST',
                     'headers': dict(self.headers),
@@ -46,8 +47,9 @@ class MockSlackServer(http.server.BaseHTTPRequestHandler):
                 }
             except:
                 # If not JSON, log as text
+                import datetime
                 log_entry = {
-                    'timestamp': '$(date -Iseconds)',
+                    'timestamp': datetime.datetime.now().isoformat(),
                     'path': self.path,
                     'method': 'POST',
                     'headers': dict(self.headers),

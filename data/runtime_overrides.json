@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "updated_at": "2025-08-23T13:52:00Z",
+  "portfolio": {
+    "max_position_size_usd": 10000,
+    "max_portfolio_exposure_pct": 10.0,
+    "cooldown_minutes_per_symbol": 10
+  }
+}

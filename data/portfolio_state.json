@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "updated_at": "2025-08-23T13:51:18Z",
+  "positions": {},
+  "daily_stats": {
+    "date": "2025-08-23",
+    "total_exposure_usd": 0,
+    "exposure_pct_capital": 0,
+    "new_exposure_today": 0,
+    "trades_today": 0,
+    "pnl_today": 0
+  },
+  "capital_base": 2000
+}

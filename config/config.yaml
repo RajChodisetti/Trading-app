@@ -83,6 +83,17 @@ security:
   slack_signing_secret_env: "SLACK_SIGNING_SECRET"
   allowed_slack_user_ids: []  # empty = no RBAC
 
+portfolio:
+  enabled: true
+  state_file_path: "data/portfolio_state.json"
+  max_position_size_usd: 25000           # per-symbol position limit
+  max_portfolio_exposure_pct: 15         # total exposure as % of capital
+  daily_trade_limit_per_symbol: 5        # max trades per symbol per day
+  cooldown_minutes_per_symbol: 5         # minimum time between trades
+  max_daily_exposure_increase_pct: 10    # daily new exposure limit
+  reset_daily_limits_at_hour: 9          # UTC hour to reset daily counters
+  position_decay_days: 30                # days to keep position history
+
 # alert sinks (example)
 alerts:
   slack_webhook_url: ""      # set in secrets manager or env

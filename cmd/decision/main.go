@@ -18,6 +18,7 @@ import (
 	"github.com/Rajchodisetti/trading-app/internal/decision"
 	"github.com/Rajchodisetti/trading-app/internal/observ"
 	"github.com/Rajchodisetti/trading-app/internal/outbox"
+	"github.com/Rajchodisetti/trading-app/internal/portfolio"
 )
 
 type haltsFile struct {
@@ -89,6 +90,15 @@ type RuntimeOverrides struct {
 		Symbol   string `json:"symbol"`
 		UntilUTC string `json:"until_utc"`
 	} `json:"frozen_symbols,omitempty"`
+	Portfolio *PortfolioOverrides `json:"portfolio,omitempty"`
+}
+
+type PortfolioOverrides struct {
+	MaxPositionSizeUSD          *float64 `json:"max_position_size_usd,omitempty"`
+	MaxPortfolioExposurePct     *float64 `json:"max_portfolio_exposure_pct,omitempty"`
+	DailyTradeLimitPerSymbol    *int     `json:"daily_trade_limit_per_symbol,omitempty"`
+	CooldownMinutesPerSymbol    *int     `json:"cooldown_minutes_per_symbol,omitempty"`
+	MaxDailyExposureIncreasePct *float64 `json:"max_daily_exposure_increase_pct,omitempty"`
 }
 
 var lastOverrideVersion int64
@@ -331,6 +341,25 @@ func applyRuntimeOverrides(cfg *config.Root, overridesPath string) ([]string, er
 		cfg.GlobalPause = *ro.GlobalPause
 	}
 	
+	// Apply portfolio overrides
+	if ro.Portfolio != nil {
+		if ro.Portfolio.MaxPositionSizeUSD != nil {
+			cfg.Portfolio.MaxPositionSizeUSD = *ro.Portfolio.MaxPositionSizeUSD
+		}
+		if ro.Portfolio.MaxPortfolioExposurePct != nil {
+			cfg.Portfolio.MaxPortfolioExposurePct = *ro.Portfolio.MaxPortfolioExposurePct
+		}
+		if ro.Portfolio.DailyTradeLimitPerSymbol != nil {
+			cfg.Portfolio.DailyTradeLimitPerSymbol = *ro.Portfolio.DailyTradeLimitPerSymbol
+		}
+		if ro.Portfolio.CooldownMinutesPerSymbol != nil {
+			cfg.Portfolio.CooldownMinutesPerSymbol = *ro.Portfolio.CooldownMinutesPerSymbol
+		}
+		if ro.Portfolio.MaxDailyExposureIncreasePct != nil {
+			cfg.Portfolio.MaxDailyExposureIncreasePct = *ro.Portfolio.MaxDailyExposureIncreasePct
+		}
+	}
+	
 	// Collect frozen symbols
 	for _, fs := range ro.FrozenSymbols {
 		frozenSymbols = append(frozenSymbols, fs.Symbol)
@@ -348,6 +377,7 @@ func applyRuntimeOverrides(cfg *config.Root, overridesPath string) ([]string, er
 			"updated_at":     ro.UpdatedAt,
 			"global_pause":   ro.GlobalPause,
 			"frozen_symbols": frozenSymbols,
+			"portfolio":      ro.Portfolio,
 		})
 	}
 	
@@ -433,6 +463,21 @@ func main() {
 		observ.Log("slack_init", map[string]any{
 			"channel": cfg.Slack.ChannelDefault,
 			"webhook_configured": cfg.Slack.WebhookURL != "",
+		})
+	}
+
+	// Initialize portfolio manager
+	var portfolioMgr *portfolio.Manager
+	if cfg.Portfolio.Enabled {
+		portfolioMgr = portfolio.NewManager(cfg.Portfolio.StateFilePath, cfg.BaseUSD)
+		if err := portfolioMgr.Load(); err != nil {
+			log.Fatalf("load portfolio state: %v", err)
+		}
+		observ.Log("portfolio_init", map[string]any{
+			"state_file": cfg.Portfolio.StateFilePath,
+			"capital_base": cfg.BaseUSD,
+			"max_position_usd": cfg.Portfolio.MaxPositionSizeUSD,
+			"max_exposure_pct": cfg.Portfolio.MaxPortfolioExposurePct,
 		})
 	}
 
@@ -660,6 +705,14 @@ func main() {
 			MinutesBefore:    cfg.EarningsEmbargo.MinutesBefore,
 			MinutesAfter:     cfg.EarningsEmbargo.MinutesAfter,
 		},
+		Portfolio: decision.PortfolioConfig{
+			Enabled:                     cfg.Portfolio.Enabled,
+			MaxPositionSizeUSD:          cfg.Portfolio.MaxPositionSizeUSD,
+			MaxPortfolioExposurePct:     cfg.Portfolio.MaxPortfolioExposurePct,
+			DailyTradeLimitPerSymbol:    cfg.Portfolio.DailyTradeLimitPerSymbol,
+			CooldownMinutesPerSymbol:    cfg.Portfolio.CooldownMinutesPerSymbol,
+			MaxDailyExposureIncreasePct: cfg.Portfolio.MaxDailyExposureIncreasePct,
+		},
 	}
 	risk := decision.RiskState{
 		GlobalPause:     cfg.GlobalPause,
@@ -681,6 +734,12 @@ func main() {
 			if newFrozenSymbols, err := applyRuntimeOverrides(&cfg, cfg.RuntimeOverrides.FilePath); err == nil {
 				risk.GlobalPause = cfg.GlobalPause
 				risk.FrozenSymbols = newFrozenSymbols
+				// Update portfolio config in engine
+				engineCfg.Portfolio.MaxPositionSizeUSD = cfg.Portfolio.MaxPositionSizeUSD
+				engineCfg.Portfolio.MaxPortfolioExposurePct = cfg.Portfolio.MaxPortfolioExposurePct
+				engineCfg.Portfolio.DailyTradeLimitPerSymbol = cfg.Portfolio.DailyTradeLimitPerSymbol
+				engineCfg.Portfolio.CooldownMinutesPerSymbol = cfg.Portfolio.CooldownMinutesPerSymbol
+				engineCfg.Portfolio.MaxDailyExposureIncreasePct = cfg.Portfolio.MaxDailyExposureIncreasePct
 				lastRefresh = time.Now()
 			}
 		}
@@ -690,7 +749,7 @@ func main() {
 		}
 
 		start := time.Now()
-		act := decision.Evaluate(sym, advBySym[sym], feat, risk, engineCfg, earningsEvents)
+		act := decision.Evaluate(sym, advBySym[sym], feat, risk, engineCfg, earningsEvents, portfolioMgr)
 		latMs := float64(time.Since(start).Microseconds()) / 1000.0
 
 		// Record metrics
@@ -711,7 +770,7 @@ func main() {
 
 		// Handle outbox for paper trading
 		if cfg.TradingMode == "paper" && ob != nil && fillSim != nil {
-			if err := processOrderForPaper(act, feat, ob, fillSim); err != nil {
+			if err := processOrderForPaper(act, feat, ob, fillSim, portfolioMgr); err != nil {
 				log.Printf("outbox error for %s: %v", sym, err)
 			}
 		}
@@ -774,12 +833,16 @@ func main() {
 
 	// Cleanup Slack client on exit
 	if slackClient != nil {
+		// In oneshot mode, give the worker time to process any queued alerts
+		if oneShot {
+			time.Sleep(100 * time.Millisecond)
+		}
 		slackClient.Close()
 	}
 
 }
 
-func processOrderForPaper(act decision.ProposedAction, feat decision.Features, ob *outbox.Outbox, fillSim *outbox.FillSimulator) error {
+func processOrderForPaper(act decision.ProposedAction, feat decision.Features, ob *outbox.Outbox, fillSim *outbox.FillSimulator, portfolioMgr *portfolio.Manager) error {
 	// Only process BUY and REDUCE intents
 	if act.Intent != "BUY_1X" && act.Intent != "BUY_5X" && act.Intent != "REDUCE" {
 		return nil
@@ -838,6 +901,14 @@ func processOrderForPaper(act decision.ProposedAction, feat decision.Features, o
 			log.Printf("write fill for %s: %v", order.ID, err)
 			return
 		}
+		
+		// Update portfolio state on fill
+		if portfolioMgr != nil {
+			if err := portfolioMgr.UpdatePosition(fill.Symbol, int(fill.Quantity), fill.Price, fill.Timestamp); err != nil {
+				log.Printf("update portfolio position for %s: %v", fill.Symbol, err)
+			}
+		}
+		
 		observ.IncCounter("paper_fills_total", map[string]string{
 			"symbol": fill.Symbol,
 			"side":   fill.Side,

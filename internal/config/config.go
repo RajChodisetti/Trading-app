@@ -75,6 +75,18 @@ type Security struct {
 	AllowedSlackUserIds     []string `yaml:"allowed_slack_user_ids"`
 }
 
+type Portfolio struct {
+	Enabled                     bool    `yaml:"enabled"`
+	StateFilePath               string  `yaml:"state_file_path"`
+	MaxPositionSizeUSD          float64 `yaml:"max_position_size_usd"`
+	MaxPortfolioExposurePct     float64 `yaml:"max_portfolio_exposure_pct"`
+	DailyTradeLimitPerSymbol    int     `yaml:"daily_trade_limit_per_symbol"`
+	CooldownMinutesPerSymbol    int     `yaml:"cooldown_minutes_per_symbol"`
+	MaxDailyExposureIncreasePct float64 `yaml:"max_daily_exposure_increase_pct"`
+	ResetDailyLimitsAtHour      int     `yaml:"reset_daily_limits_at_hour"`
+	PositionDecayDays           int     `yaml:"position_decay_days"`
+}
+
 type Root struct {
 	TradingMode       string            `yaml:"trading_mode"` // paper | live | dry-run
 	GlobalPause       bool              `yaml:"global_pause"`
@@ -88,6 +100,7 @@ type Root struct {
 	Slack             Slack             `yaml:"slack"`
 	RuntimeOverrides  RuntimeOverrides  `yaml:"runtime_overrides"`
 	Security          Security          `yaml:"security"`
+	Portfolio         Portfolio         `yaml:"portfolio"`
 	BaseUSD           float64           `yaml:"base_usd"`
 }
 

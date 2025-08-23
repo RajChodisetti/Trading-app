@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Rajchodisetti/trading-app/internal/config"
+	"github.com/Rajchodisetti/trading-app/internal/portfolio"
 )
 
 type SlashCommand struct {
@@ -72,6 +73,7 @@ type Handler struct {
 	signingSecret    string
 	allowedUsers     []string
 	runtimePath      string
+	portfolioMgr     *portfolio.Manager
 	mu               sync.RWMutex
 	nonceCache       map[string]time.Time // nonce -> timestamp
 	metrics          HandlerMetrics
@@ -84,11 +86,12 @@ type HandlerMetrics struct {
 	CommandLatencyMs     map[string][]float64
 }
 
-func NewHandler(signingSecret string, allowedUsers []string, runtimePath string) *Handler {
+func NewHandler(signingSecret string, allowedUsers []string, runtimePath string, portfolioMgr *portfolio.Manager) *Handler {
 	h := &Handler{
 		signingSecret: signingSecret,
 		allowedUsers:  allowedUsers,
 		runtimePath:   runtimePath,
+		portfolioMgr:  portfolioMgr,
 		nonceCache:    make(map[string]time.Time),
 		metrics: HandlerMetrics{
 			CommandLatencyMs: make(map[string][]float64),
@@ -506,10 +509,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		response = h.handleFreeze(cmd)
 	case "/status":
 		response = h.handleStatus(cmd)
+	case "/position":
+		response = h.handlePosition(cmd)
+	case "/exposure":
+		response = h.handleExposure(cmd)
+	case "/limits":
+		response = h.handleLimits(cmd)
 	default:
 		response = SlashResponse{
 			ResponseType: "ephemeral",
-			Text:         "❌ Unknown command. Available: /pause, /resume, /freeze, /status",
+			Text:         "❌ Unknown command. Available: /pause, /resume, /freeze, /status, /position, /exposure, /limits",
 		}
 	}
 	
@@ -544,6 +553,207 @@ func parseFormBody(body string) (map[string]string, error) {
 	}
 	
 	return values, nil
+}
+
+// handlePosition shows position details for a symbol
+func (h *Handler) handlePosition(cmd SlashCommand) SlashResponse {
+	if h.portfolioMgr == nil {
+		return SlashResponse{
+			ResponseType: "ephemeral",
+			Text:         "❌ Portfolio management is not enabled",
+		}
+	}
+
+	symbol := strings.ToUpper(strings.TrimSpace(cmd.Text))
+	if symbol == "" {
+		return SlashResponse{
+			ResponseType: "ephemeral",
+			Text:         "❌ Please provide a symbol. Usage: `/position AAPL`",
+		}
+	}
+
+	pos, exists := h.portfolioMgr.GetPosition(symbol)
+	if !exists || pos.Quantity == 0 {
+		return SlashResponse{
+			ResponseType: "ephemeral",
+			Text:         fmt.Sprintf("📋 No position in %s", symbol),
+		}
+	}
+
+	// Calculate position details
+	positionValue := pos.CurrentNotional
+	side := "LONG"
+	if pos.Quantity < 0 {
+		side = "SHORT"
+	}
+
+	lastTradeTime := "Never"
+	if pos.LastTradeAt != "" {
+		if t, err := time.Parse(time.RFC3339, pos.LastTradeAt); err == nil {
+			lastTradeTime = t.Format("2006-01-02 15:04:05 MST")
+		}
+	}
+
+	return SlashResponse{
+		ResponseType: "ephemeral",
+		Text:         fmt.Sprintf("📊 Position Details: %s", symbol),
+		Attachments: []struct {
+			Color  string `json:"color,omitempty"`
+			Fields []struct {
+				Title string `json:"title"`
+				Value string `json:"value"`
+				Short bool   `json:"short"`
+			} `json:"fields,omitempty"`
+		}{
+			{
+				Color: "good",
+				Fields: []struct {
+					Title string `json:"title"`
+					Value string `json:"value"`
+					Short bool   `json:"short"`
+				}{
+					{Title: "Side", Value: side, Short: true},
+					{Title: "Quantity", Value: fmt.Sprintf("%d", pos.Quantity), Short: true},
+					{Title: "Avg Entry", Value: fmt.Sprintf("$%.2f", pos.AvgEntryPrice), Short: true},
+					{Title: "Current Value", Value: fmt.Sprintf("$%.2f", positionValue), Short: true},
+					{Title: "Unrealized P&L", Value: fmt.Sprintf("$%.2f", pos.UnrealizedPnL), Short: true},
+					{Title: "Today's P&L", Value: fmt.Sprintf("$%.2f", pos.RealizedPnLToday), Short: true},
+					{Title: "Trades Today", Value: fmt.Sprintf("%d", pos.TradeCountToday), Short: true},
+					{Title: "Last Trade", Value: lastTradeTime, Short: true},
+				},
+			},
+		},
+	}
+}
+
+// handleExposure shows overall portfolio exposure
+func (h *Handler) handleExposure(cmd SlashCommand) SlashResponse {
+	if h.portfolioMgr == nil {
+		return SlashResponse{
+			ResponseType: "ephemeral",
+			Text:         "❌ Portfolio management is not enabled",
+		}
+	}
+
+	stats := h.portfolioMgr.GetDailyStats()
+	positions := h.portfolioMgr.GetAllPositions()
+
+	activePositions := 0
+	for _, pos := range positions {
+		if pos.Quantity != 0 {
+			activePositions++
+		}
+	}
+
+	exposureColor := "good"
+	if stats.ExposurePctCapital > 12 {
+		exposureColor = "warning"
+	}
+	if stats.ExposurePctCapital > 14 {
+		exposureColor = "danger"
+	}
+
+	return SlashResponse{
+		ResponseType: "ephemeral",
+		Text:         "📈 Portfolio Exposure Overview",
+		Attachments: []struct {
+			Color  string `json:"color,omitempty"`
+			Fields []struct {
+				Title string `json:"title"`
+				Value string `json:"value"`
+				Short bool   `json:"short"`
+			} `json:"fields,omitempty"`
+		}{
+			{
+				Color: exposureColor,
+				Fields: []struct {
+					Title string `json:"title"`
+					Value string `json:"value"`
+					Short bool   `json:"short"`
+				}{
+					{Title: "Total Exposure", Value: fmt.Sprintf("$%.2f", stats.TotalExposureUSD), Short: true},
+					{Title: "% of Capital", Value: fmt.Sprintf("%.1f%%", stats.ExposurePctCapital), Short: true},
+					{Title: "Active Positions", Value: fmt.Sprintf("%d", activePositions), Short: true},
+					{Title: "New Exposure Today", Value: fmt.Sprintf("$%.2f", stats.NewExposureToday), Short: true},
+					{Title: "Trades Today", Value: fmt.Sprintf("%d", stats.TradesToday), Short: true},
+					{Title: "P&L Today", Value: fmt.Sprintf("$%.2f", stats.PnLToday), Short: true},
+					{Title: "Date", Value: stats.Date, Short: true},
+				},
+			},
+		},
+	}
+}
+
+// handleLimits shows current portfolio limits and usage
+func (h *Handler) handleLimits(cmd SlashCommand) SlashResponse {
+	if h.portfolioMgr == nil {
+		return SlashResponse{
+			ResponseType: "ephemeral",
+			Text:         "❌ Portfolio management is not enabled",
+		}
+	}
+
+	// Load current config to get limits
+	cfg, err := config.Load("config/config.yaml")
+	if err != nil {
+		return SlashResponse{
+			ResponseType: "ephemeral",
+			Text:         fmt.Sprintf("❌ Error loading config: %v", err),
+		}
+	}
+
+	stats := h.portfolioMgr.GetDailyStats()
+	positions := h.portfolioMgr.GetAllPositions()
+
+	// Find largest position
+	largestPosition := 0.0
+	largestSymbol := "None"
+	for symbol, pos := range positions {
+		if pos.Quantity != 0 {
+			posValue := pos.CurrentNotional
+			if posValue < 0 {
+				posValue = -posValue
+			}
+			if posValue > largestPosition {
+				largestPosition = posValue
+				largestSymbol = symbol
+			}
+		}
+	}
+
+	exposureUsage := (stats.ExposurePctCapital / cfg.Portfolio.MaxPortfolioExposurePct) * 100
+	positionUsage := (largestPosition / cfg.Portfolio.MaxPositionSizeUSD) * 100
+
+	return SlashResponse{
+		ResponseType: "ephemeral",
+		Text:         "⚖️ Portfolio Limits & Usage",
+		Attachments: []struct {
+			Color  string `json:"color,omitempty"`
+			Fields []struct {
+				Title string `json:"title"`
+				Value string `json:"value"`
+				Short bool   `json:"short"`
+			} `json:"fields,omitempty"`
+		}{
+			{
+				Color: "good",
+				Fields: []struct {
+					Title string `json:"title"`
+					Value string `json:"value"`
+					Short bool   `json:"short"`
+				}{
+					{Title: "Max Position Size", Value: fmt.Sprintf("$%.0f", cfg.Portfolio.MaxPositionSizeUSD), Short: true},
+					{Title: "Largest Position", Value: fmt.Sprintf("$%.2f (%s)", largestPosition, largestSymbol), Short: true},
+					{Title: "Position Usage", Value: fmt.Sprintf("%.1f%%", positionUsage), Short: true},
+					{Title: "Max Portfolio Exposure", Value: fmt.Sprintf("%.1f%%", cfg.Portfolio.MaxPortfolioExposurePct), Short: true},
+					{Title: "Current Exposure", Value: fmt.Sprintf("%.1f%%", stats.ExposurePctCapital), Short: true},
+					{Title: "Exposure Usage", Value: fmt.Sprintf("%.1f%%", exposureUsage), Short: true},
+					{Title: "Daily Trade Limit", Value: fmt.Sprintf("%d per symbol", cfg.Portfolio.DailyTradeLimitPerSymbol), Short: true},
+					{Title: "Cooldown Period", Value: fmt.Sprintf("%d minutes", cfg.Portfolio.CooldownMinutesPerSymbol), Short: true},
+				},
+			},
+		},
+	}
 }
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
@@ -607,7 +817,16 @@ func main() {
 		}
 	}
 	
-	handler := NewHandler(signingSecret, userList, runtimePath)
+	// Initialize portfolio manager if available
+	var portfolioMgr *portfolio.Manager
+	if cfg, err := config.Load("config/config.yaml"); err == nil && cfg.Portfolio.Enabled {
+		portfolioMgr = portfolio.NewManager(cfg.Portfolio.StateFilePath, cfg.BaseUSD)
+		if err := portfolioMgr.Load(); err != nil {
+			log.Printf("Warning: failed to load portfolio state: %v", err)
+		}
+	}
+	
+	handler := NewHandler(signingSecret, userList, runtimePath, portfolioMgr)
 	
 	mux := http.NewServeMux()
 	mux.Handle("/slack/commands", handler)

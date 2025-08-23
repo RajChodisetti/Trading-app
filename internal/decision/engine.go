@@ -6,6 +6,7 @@ import (
 	"time"
 	
 	"github.com/Rajchodisetti/trading-app/internal/observ"
+	"github.com/Rajchodisetti/trading-app/internal/portfolio"
 )
 
 type Advice struct {
@@ -44,6 +45,16 @@ type Config struct {
 	BaseUSD         float64 // e.g., 2000
 	Corroboration   CorroborationConfig
 	EarningsEmbargo EarningsEmbargoConfig
+	Portfolio       PortfolioConfig
+}
+
+type PortfolioConfig struct {
+	Enabled                     bool
+	MaxPositionSizeUSD          float64
+	MaxPortfolioExposurePct     float64
+	DailyTradeLimitPerSymbol    int
+	CooldownMinutesPerSymbol    int
+	MaxDailyExposureIncreasePct float64
 }
 
 type CorroborationConfig struct {
@@ -140,7 +151,7 @@ func fuseWithoutPR(advs []Advice) (float64, map[string]float64) {
 
 // Evaluate applies gates then threshold mapping.
 // For session #1 we only use GlobalPause and Halt gates + thresholds.
-func Evaluate(symbol string, advs []Advice, feat Features, risk RiskState, cfg Config, earningsEvents []EarningsEvent) ProposedAction {
+func Evaluate(symbol string, advs []Advice, feat Features, risk RiskState, cfg Config, earningsEvents []EarningsEvent, portfolioMgr *portfolio.Manager) ProposedAction {
 	now := time.Now()
 	
 	// Check corroboration requirements
@@ -234,6 +245,55 @@ func Evaluate(symbol string, advs []Advice, feat Features, risk RiskState, cfg C
 		}
 	}
 
+	// Portfolio gates - only check if portfolio management is enabled and trade would be BUY
+	if cfg.Portfolio.Enabled && portfolioMgr != nil && fused >= cfg.Positive {
+		// Caps gate - check position and portfolio exposure limits
+		pos, hasPosition := portfolioMgr.GetPosition(symbol)
+		
+		// Calculate new position value if this trade executes
+		var newPositionValue float64
+		if fused >= cfg.VeryPos {
+			newPositionValue = cfg.BaseUSD * 5
+		} else {
+			newPositionValue = cfg.BaseUSD
+		}
+		
+		// Check per-symbol position cap
+		if hasPosition {
+			currentPositionValue := abs(pos.CurrentNotional)
+			if currentPositionValue+newPositionValue > cfg.Portfolio.MaxPositionSizeUSD {
+				reason.GatesBlocked = append(reason.GatesBlocked, "caps")
+				observ.IncCounter("position_cap_violations_total", map[string]string{"symbol": symbol})
+			}
+		} else {
+			// New position
+			if newPositionValue > cfg.Portfolio.MaxPositionSizeUSD {
+				reason.GatesBlocked = append(reason.GatesBlocked, "caps")
+				observ.IncCounter("position_cap_violations_total", map[string]string{"symbol": symbol})
+			}
+		}
+		
+		// Check portfolio exposure cap
+		newExposurePct := ((portfolioMgr.GetExposureUSD() + newPositionValue) / (cfg.BaseUSD * 100)) * 100
+		if newExposurePct > cfg.Portfolio.MaxPortfolioExposurePct {
+			reason.GatesBlocked = append(reason.GatesBlocked, "caps")
+			observ.IncCounter("portfolio_exposure_violations_total", map[string]string{"symbol": symbol})
+		}
+		
+		// Cooldown gate - check minimum time between trades
+		if !portfolioMgr.CanTrade(symbol, cfg.Portfolio.CooldownMinutesPerSymbol) {
+			reason.GatesBlocked = append(reason.GatesBlocked, "cooldown")
+			observ.IncCounter("cooldown_gate_blocks_total", map[string]string{"symbol": symbol})
+		}
+		
+		// Daily trade limit gate
+		tradeCount := portfolioMgr.GetTradeCount(symbol)
+		if tradeCount >= cfg.Portfolio.DailyTradeLimitPerSymbol {
+			reason.GatesBlocked = append(reason.GatesBlocked, "caps")
+			observ.IncCounter("daily_limit_hits_total", map[string]string{"symbol": symbol})
+		}
+	}
+
 	// Corroboration soft gate - convert would-be BUY to HOLD
 	corroborationBlocked := false
 	if needsCorroboration && corrobState != nil && !now.After(corrobState.Until) && len(corrobState.Missing) > 0 {
@@ -256,8 +316,8 @@ func Evaluate(symbol string, advs []Advice, feat Features, risk RiskState, cfg C
 		}
 	}
 
-	// Hard gates (halt, session, liquidity, global_pause, frozen) -> REJECT
-	hardGates := []string{"global_pause", "halt", "session", "liquidity", "frozen"}
+	// Hard gates (halt, session, liquidity, global_pause, frozen, caps, cooldown) -> REJECT
+	hardGates := []string{"global_pause", "halt", "session", "liquidity", "frozen", "caps", "cooldown"}
 	hasHardGate := false
 	for _, gate := range reason.GatesBlocked {
 		for _, hardGate := range hardGates {
@@ -497,4 +557,12 @@ func analyzeEarningsEmbargo(symbol string, events []EarningsEvent, cfg EarningsE
 	}
 	
 	return false, nil
+}
+
+// abs returns absolute value of a float64
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
