@@ -59,6 +59,37 @@
    - Verify gate combinations
    - Check reason logging completeness
 
+#### Phase 4: Comprehensive Validation (5-10 min)
+**REQUIRED**: After implementation is complete, run full validation suite:
+
+1. **Unit Test Compilation**:
+   ```bash
+   go test ./...   # Ensure all modules compile and pass
+   ```
+
+2. **Core Functionality Test**:
+   ```bash
+   GLOBAL_PAUSE=false go run ./cmd/decision -oneshot=true
+   # Verify: All risk managers initialize, decisions made correctly
+   ```
+
+3. **Environment Override Validation**:
+   ```bash
+   GLOBAL_PAUSE=true go run ./cmd/decision -oneshot=true | grep global_pause
+   TRADING_MODE=live GLOBAL_PAUSE=false go run ./cmd/decision -oneshot=true | grep trading_mode
+   ```
+
+4. **Integration Component Tests**:
+   ```bash
+   # Test key integrations (Slack, metrics, etc.)
+   # Example: Start Slack handler, test health endpoint
+   ```
+
+5. **Configuration Validation**:
+   - Verify all new config parameters load correctly
+   - Test with different environment variable combinations
+   - Ensure backward compatibility maintained
+
 ### Post-Session (5-10 min)
 1. **Document Evidence** in session markdown:
    - Commands run
@@ -71,7 +102,13 @@
    - Add discovered work to "Next"
    - Update "Now" for next session
 
-3. **Git Operations**:
+3. **Next Session Planning**:
+   - **REQUIRED**: Update `docs/NEXT-SESSION-PLAN.md` with next session details
+   - Define clear acceptance criteria and implementation plan
+   - Identify dependencies and prerequisites
+   - Estimate duration and risk level
+
+4. **Git Operations**:
    ```bash
    # Stage all changes
    git add .

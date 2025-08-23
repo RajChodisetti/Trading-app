@@ -1,190 +1,194 @@
-# Session 10 Plan: Advanced Risk Controls & Real-Time Monitoring
+# Session 11 Plan: Wire WebSocket/SSE Streaming Transport
 
 ## Overview
 
-Add proactive risk controls (stop-loss, sector exposure limits, drawdown suspension) plus real-time monitoring via metrics and Slack. Keep it paper-only, deterministic, and reversible.
+Replace the current HTTP polling wire stub with real-time WebSocket or Server-Sent Events (SSE) streaming transport. Maintain deterministic testing while enabling low-latency data ingestion for production readiness.
 
-## What's Changed vs. Draft
+## What's Changed vs. Previous Sessions
 
-- **Scope split**: do sector exposure limits (deterministic) now; defer true correlation math (rolling returns) to a later session.
-- **Soft vs hard gates clarified**: drawdown/sector limits are soft for reductions (BUY→HOLD; REDUCE allowed). Stop-loss produces orders and should not be blocked by other soft gates.
-- **Clear semantics**: UTC boundaries, RTH vs AH behavior, idempotency, single-shot stops, and cooldown are specified.
-- **Deterministic tests**: fixtures drive P&L moves and exposure; health dashboard is Slack-only (no web UI).
+- **Real-time Transport**: Move from polling-based HTTP to push-based streaming for sub-second latency
+- **Protocol Choice**: Evaluate WebSocket vs SSE based on simplicity and browser compatibility
+- **Backward Compatibility**: Maintain existing wire protocol contracts while upgrading transport
+- **Testing Strategy**: Keep deterministic fixture-based testing with streaming simulation
 
 ## Acceptance Criteria
 
-- **Stop-loss**: When a position breaches configured loss thresholds, exactly one paper SELL order is emitted (idempotent), with cooldown preventing immediate re-entry for that symbol.
-- **Sector exposure limits (first version)**: New buys that push gross sector exposure above the configured cap are downgraded to HOLD with `gates_blocked:["sector_limit"]`; reductions remain allowed.
-- **Drawdown suspension**: When daily drawdown surpasses the pause threshold, new buys are downgraded to HOLD with `gates_blocked:["drawdown_pause"]`; reductions allowed. Weekly thresholds produce warnings and/or size reductions.
-- **Monitoring**: Slack `/dashboard` returns current NAV, P&L (daily/weekly), exposures by sector, active gates, and health color (Green/Yellow/Red). Metrics expose stop triggers, blocks, and drawdown states.
-- **Tests**: `make test` Case 10 passes: stop-loss triggers once, sector cap blocks buys, drawdown pause activates, and dashboard/metrics reflect states.
+- **Streaming Transport**: WebSocket or SSE client connects to wire stub and receives real-time events
+- **Connection Management**: Automatic reconnection with exponential backoff, connection health monitoring
+- **Protocol Compatibility**: All existing wire protocol events stream correctly with proper ordering
+- **Testing**: `make test` wire_mode case passes with streaming; fixtures drive deterministic event sequences
+- **Metrics**: Connection state, reconnection attempts, message rates, and latency tracking
+- **Graceful Degradation**: Falls back to HTTP polling if streaming unavailable
 
 ## Implementation Plan
 
-### 1) Automatic Stop-Loss (25–30 min)
+### 1) Protocol Selection & Architecture (15 min)
 
-**Policy**
-- **Reference price**: mark-to-market using mid; fallback to last if bid/ask missing.
-- **Trigger types**: absolute (%) from entry VWAP (baseline) and optional trailing (%) from max favorable price (defer trailing to later if time is tight).
-- **Session**: configurable; default RTH only (do not trigger stops AH unless `stop_loss.allow_after_hours=true`).
-- **Idempotency**: exactly one stop order per open position per trigger window; dedupe via (symbol, position_id, trigger_level_bucket, day).
+**Decision Criteria:**
+- **WebSocket**: Full-duplex, binary support, connection overhead
+- **SSE**: Simpler, HTTP/2 compatible, browser-friendly, text-only
+- **Choice**: Start with SSE for simplicity, upgrade path to WebSocket later
 
-**Behavior**
-- **On breach**: enqueue paper SELL to outbox with reason `stop_loss`.
-- **Cooldown**: prevent new buys in the symbol for `stop_loss_cooldown_hours` after a trigger (exposed as `gates_blocked:["cooldown_stop"]`).
-- **Interplay**: stop orders bypass sector/drawdown soft gates; if the symbol is halted, queue intent to reduce and keep retrying when unhalted (emit `stop_deferred_total`).
+**Architecture:**
+```
+Wire Stub Server (SSE) ←→ Decision Engine Client
+     ↓ streams                    ↓ processes  
+Fixture Events              → Decision Flow
+```
 
-**Metrics**
-- `stop_triggers_total{symbol,type="absolute|trailing"}`
-- `stop_orders_sent_total{symbol}`
-- `stop_deferred_total{reason="halt|liquidity"}`
-- `stop_cooldown_active{symbol}` gauge
+### 2) SSE Wire Stub Server (20 min)
 
-**Tests**
-- Fixture drops AAPL by >6% from entry → one `paper_order` SELL; second pass within cooldown → no new order.
+**Enhanced cmd/stubs/main.go:**
+- Add `/stream` SSE endpoint alongside existing HTTP endpoints
+- Stream fixture events with proper `data:`, `event:`, `id:` formatting
+- Maintain cursor-based event ordering and replay capability
+- Add connection tracking and client management
 
-### 2) Sector Exposure Limits (20–25 min)
+**SSE Event Format:**
+```
+event: tick
+id: 1692123456789
+data: {"symbol":"AAPL","last":210.02,"ts_utc":"2025-08-23T15:30:00Z"}
 
-**Policy (v1)**
-- Map each symbol to one sector (static mapping in config for now).
-- Compute gross sector exposure = sum of absolute notionals in sector / NAV * 100.
-- If proposed BUY would exceed `max_sector_exposure_pct`, downgrade to HOLD with `gates_blocked:["sector_limit"]`. Always allow REDUCE.
+event: news
+id: 1692123456790
+data: {"symbol":"AAPL","score":0.7,"provider":"reuters","ts_utc":"2025-08-23T15:30:01Z"}
+```
 
-**Metrics**
-- `sector_exposure_pct{sector}`
-- `sector_limit_blocks_total{sector}`
+### 3) SSE Client Implementation (25 min)
 
-**Tests**
-- Seed positions so Tech is at 38% of NAV; attempt BUY pushing >40% → blocked with gate; REDUCE allowed.
-- (Later session: real correlation matrix or beta-adjusted exposure.)
+**New internal/transport/sse.go:**
+```go
+type SSEClient struct {
+    url           string
+    eventChan     chan Event
+    reconnectFunc func() error
+    healthCheck   func() bool
+}
 
-### 3) Drawdown Protection & Circuit (15–20 min)
+func (c *SSEClient) Connect() error
+func (c *SSEClient) Subscribe() <-chan Event
+func (c *SSEClient) Reconnect() error
+func (c *SSEClient) Close() error
+```
 
-**Policy**
-- **Daily drawdown** measured from start-of-trading-day NAV (UTC date; configurable market calendar later). Include realized + unrealized P&L.
-- **Weekly drawdown** measured from Monday 00:00 UTC NAV (loose for now).
-- **Responses**:
-  - **Warning**: set position size multiplier (e.g., 50%) for new buys.
-  - **Pause**: BUY→HOLD with `gates_blocked:["drawdown_pause"]`; reductions allowed.
+**Connection Management:**
+- Exponential backoff: 1s → 2s → 4s → 8s → 16s max
+- Health checks every 30s with ping/pong or heartbeat events
+- Graceful shutdown and cleanup on errors
 
-**Metrics**
-- `drawdown_pct_daily`, `drawdown_pct_weekly` gauges
-- `drawdown_warnings_total`, `drawdown_pauses_total`
-- `size_multiplier_current`
+### 4) Integration with Decision Engine (15 min)
 
-**Tests**
-- Fixture that simulates cumulative P&L down beyond thresholds → verify multiplier and eventual pause; verify buys blocked, reduces allowed.
+**Update cmd/decision/main.go:**
+- Add `-streaming` flag to enable SSE mode vs HTTP polling
+- Wire streaming client into existing event processing loop
+- Maintain same event handling logic, just different transport
+- Add streaming metrics to observability endpoint
 
-### 4) Real-Time Monitoring (15–20 min)
+**Event Processing:**
+```go
+if *streaming {
+    client := transport.NewSSEClient(wireURL + "/stream")
+    eventChan := client.Subscribe()
+    for event := range eventChan {
+        processWireEvent(event) // existing logic unchanged
+    }
+}
+```
 
-**Slack `/dashboard` (ephemeral)**
-- **Fields**: NAV, daily/weekly P&L, sector exposures, active gates (drawdown_pause, cooldown_stop, sector_limit counts), size multiplier, last 5 orders.
-- **Health color**:
-  - **Green**: all metrics under 70% of limits
-  - **Yellow**: ≥70% of any limit or active warning
-  - **Red**: any pause active or stop triggered in last X minutes
+### 5) Testing & Validation (15 min)
 
-**Optional** `/risk set size_multiplier=0.5 ttl=60m` for temporary size cuts (writes runtime override with TTL).
+**Enhanced scripts/run-tests.sh:**
+- Update wire_mode test to use streaming by default
+- Add fallback test for HTTP polling compatibility
+- Test reconnection scenarios with stub server restart
+- Validate event ordering and cursor behavior
 
-**Metrics**
-- Keep Prometheus as source of truth; the Slack response is just a snapshot.
+**Test Scenarios:**
+- Normal streaming operation
+- Network interruption and reconnection
+- Server restart during streaming
+- Mixed HTTP/SSE compatibility
 
-**Tests**
-- Unit-ish: call dashboard endpoint via the Slack handler (local HTTP) and assert JSON fields present with sane ranges.
+## Success Metrics
 
-## Configuration Extensions
+### Technical Validation
+- [ ] SSE connection established and events streaming
+- [ ] Automatic reconnection after network/server failures
+- [ ] Event ordering preserved across reconnections
+- [ ] Latency improvement: <100ms vs previous polling intervals
+- [ ] All existing wire_mode tests pass with streaming
 
+### Operational Readiness
+- [ ] Connection state visible in metrics endpoint
+- [ ] Reconnection attempts and success rates tracked
+- [ ] Message throughput and latency monitoring
+- [ ] Graceful degradation to HTTP polling working
+
+### Code Quality
+- [ ] SSE client properly abstracts transport layer
+- [ ] Existing decision engine code unchanged
+- [ ] Clean configuration switches between modes
+- [ ] Error handling and logging comprehensive
+
+## Risk Mitigation
+
+### Technical Risks
+- **SSE browser compatibility**: Use standard EventSource API, polyfills available
+- **Connection drops**: Implement robust reconnection with cursor resume
+- **Memory leaks**: Proper goroutine cleanup and connection management
+- **Event ordering**: Maintain sequence numbers and cursor-based replay
+
+### Operational Risks
+- **Wire stub stability**: Keep HTTP fallback for reliability
+- **Debugging complexity**: Enhance logging for connection lifecycle
+- **Performance regression**: Monitor latency and throughput vs polling
+
+## Implementation Notes
+
+### Configuration Updates
 ```yaml
-risk_controls:
-  stop_loss:
-    enabled: true
-    default_stop_loss_pct: 6
-    emergency_stop_loss_pct: 10
-    allow_after_hours: false
-    cooldown_hours: 24
-
-  sector_limits:
-    enabled: true
-    max_sector_exposure_pct: 40
-    sector_map:
-      AAPL: tech
-      MSFT: tech
-      GOOGL: tech
-      NVDA: tech
-      JPM: finance
-      BAC: finance
-      GS: finance
-      BIOX: biotech
-      GILD: biotech
-      MRNA: biotech
-
-  drawdown:
-    enabled: true
-    daily_warning_pct: 2.0
-    daily_pause_pct: 3.0
-    weekly_warning_pct: 5.0
-    weekly_pause_pct: 8.0
-    size_multiplier_on_warning_pct: 50
-
-monitoring:
-  dashboard_recent_trades: 5
-  health_check_interval_minutes: 5
+wire:
+  enabled: true
+  url: "ws://localhost:8091"  # or http:// for polling
+  transport: "sse"            # or "http" for polling
+  reconnect:
+    initial_delay_ms: 1000
+    max_delay_ms: 16000
+    max_attempts: -1          # infinite
+  health_check_interval_s: 30
 ```
 
-Keep correlation math out of this session; the `sector_limits` block gives you a usable, deterministic proxy.
-
-## Expected Files Changed
-
-- `internal/risk/stoploss.go` — stop detection, cooldown, metrics
-- `internal/risk/sector_limits.go` — exposure calc and gate  
-- `internal/risk/drawdown.go` — rolling P&L, size multiplier, pause state
-- `internal/portfolio/state.go` — positions with entry VWAPs, sector tags
-- `internal/decision/engine.go` — incorporate sector_limit & drawdown_pause gates (soft for buys)
-- `cmd/decision/main.go` — wire risk modules + metrics
-- `cmd/slack-handler/main.go` — `/dashboard` + optional `/risk set size_multiplier=...`
-- `config/config.yaml` — new risk_controls + monitoring
-- `scripts/run-tests.sh` — Case 10 with three subcases (stop, sector block, drawdown)
-
-## Success Evidence Patterns
-
-```bash
-# 10A: Stop-loss triggers once and enqueues SELL
-go run ./cmd/decision -oneshot=false -duration-seconds=10 \
- | egrep '"event":"paper_order"|"event":"paper_fill"|stop_loss'
-
-# 10B: Sector exposure blocks BUY, allows REDUCE
-make test  # includes an assertion for gates_blocked:["sector_limit"]
-
-# 10C: Drawdown warning→multiplier, then pause→BUY→HOLD
-go run ./cmd/decision -oneshot=false -duration-seconds=10
-# Slack: /dashboard shows Red when paused; metrics show drawdown_pauses_total>0
+### Metrics Extensions
+```json
+{
+  "wire_transport": "sse",
+  "connection_state": "connected",
+  "reconnect_attempts": 3,
+  "last_reconnect": "2025-08-23T15:30:00Z",
+  "messages_received": 1247,
+  "average_latency_ms": 45
+}
 ```
 
-## Risk Mitigation & Edge Cases
+## Next Session Preview
 
-- **Halts during stop**: don't spam orders; mark `stop_pending` and retry on unhalt.
-- **Missing quotes**: don't trigger stops on stale data; require fresh tick (< Xs).
-- **After-hours gaps**: if `allow_after_hours=false`, don't fire stops; instead mark `stop_armed` and evaluate at RTH open tick.
-- **Re-entry after stop**: cooldown enforced via gate; `what_would_change_it: "cooldown_until=..."``.
-- **Competing gates**: list them all; buys may be blocked by multiple soft gates simultaneously.
-- **NAV source**: keep NAV synthetic (positions + cash) in paper mode; persist in state for daily/weekly resets.
+**Session 12: Real Adapter Integrations**
+- Replace mock providers with real market data APIs
+- Start with quotes provider (Alpha Vantage, IEX, etc.)
+- Implement API key management and rate limiting
+- Maintain paper trading safety throughout
 
-## Test Strategy
+## Dependencies & Prerequisites
 
-**Deterministic fixtures that:**
-- Decrease AAPL by 6–7% from entry (stop triggers once).
-- Attempt incremental Tech buys to breach 40% sector cap.
-- Accumulate negative ticks to cross drawdown warning & pause thresholds.
+- Session 10 risk controls must be fully functional
+- Wire stub HTTP endpoints remain available for fallback
+- Existing fixture-based testing framework intact
+- Metrics and observability infrastructure operational
 
-**Assertions:**
-- Exactly one stop order; no duplicates on second run.
-- `gates_blocked` contains `sector_limit` for capped attempts.
-- `size_multiplier_current=0.5` at warning; `drawdown_pause` gate activates at pause.
-- `/dashboard` shows correct health color transitions.
+---
 
-## Session Goals
-
-1. Ship single-shot stop-loss with cooldown and paper execution.
-2. Enforce sector exposure cap (deterministic proxy for correlation).
-3. Activate drawdown warning/pause with clear, explainable reasons.
-4. Provide real-time visibility via Slack and metrics.
+**Estimated Duration**: 90 minutes
+**Risk Level**: Medium (transport changes, connection management)
+**Reversibility**: High (HTTP fallback maintained, feature flags)
+**Evidence Required**: Streaming latency <100ms, reconnection working, all tests pass
