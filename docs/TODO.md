@@ -1,13 +1,14 @@
 # TODO - Trading System Development
 
 ## Now (Current Session Focus)
-- [x] Session 12 complete: Real adapter integrations (quotes)
-- [x] Update documentation with Session 12 progress
-- [x] Create next session plan for Session 13
+- [x] Session 13 complete: Real-time drawdown monitoring and circuit breakers
+- [x] Update documentation with Session 13 progress  
+- [x] Create next session plan for Session 14
+- [x] Git commit and push Session 13 implementation
 
 ## Next (Priority Queue) 
-- [ ] Session 13: Drawdown monitoring and circuit breakers
-- [ ] Session 14: Real news feed integration
+- [ ] Session 14: Portfolio caps and cooldown gates
+- [ ] Session 15: Real adapter integration (replace remaining mocks)
 
 ## Later (Future Enhancements)
 - [ ] Portfolio tracking and PnL calculation
@@ -28,3 +29,4 @@
 - [x] Session 10: Advanced Risk Controls & Real-Time Monitoring (2025-08-23)
 - [x] Session 11: Wire WebSocket/SSE streaming transport (2025-08-23)
 - [x] Session 12: Real adapter integrations (quotes) (2025-08-24)
+- [x] Session 13: Real-time drawdown monitoring and circuit breakers (2025-08-24)
