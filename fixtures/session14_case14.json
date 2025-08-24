@@ -1,0 +1,359 @@
+{
+  "name": "Case 14: Portfolio Caps and Cooldown Gates - Comprehensive Test",
+  "description": "Tests symbol caps, concentration limits, daily trade limits, cooldown periods, pre-send drift detection, and soft gate semantics (BUY→HOLD conversions)",
+  "config": {
+    "global_pause": false,
+    "trading_mode": "paper",
+    "caps_cooldown": {
+      "enforce": true,
+      "default_symbol_cap_usd": 50000,
+      "max_single_symbol_pct": 20.0,
+      "daily_trade_limit": 3,
+      "cooldown": {
+        "enforce": true,
+        "default_cooldown_sec": 30,
+        "same_side_cooldown_sec": 45,
+        "opposite_trades_allowed": true,
+        "intent_cooldowns": {
+          "BUY_1X": 30,
+          "BUY_5X": 60
+        }
+      }
+    }
+  },
+  "initial_portfolio": {
+    "nav": 200000,
+    "positions": {
+      "AAPL": {
+        "quantity": 200,
+        "avg_entry_price": 200.00,
+        "current_value": 40000
+      }
+    }
+  },
+  "events": [
+    {
+      "timestamp": "2025-08-24T14:30:00Z",
+      "type": "market_data",
+      "data": {
+        "symbol": "AAPL",
+        "bid": 199.50,
+        "ask": 200.50,
+        "last": 200.00
+      }
+    },
+    {
+      "timestamp": "2025-08-24T14:30:01Z", 
+      "type": "market_data",
+      "data": {
+        "symbol": "NVDA",
+        "bid": 118.00,
+        "ask": 120.00,
+        "last": 119.00
+      }
+    },
+    {
+      "timestamp": "2025-08-24T14:30:02Z",
+      "type": "market_data", 
+      "data": {
+        "symbol": "TSLA",
+        "bid": 194.50,
+        "ask": 195.50,
+        "last": 195.00
+      }
+    }
+  ],
+  "test_scenarios": [
+    {
+      "name": "Scenario 1: Within Caps - Should Pass",
+      "description": "AAPL position within 20% concentration and $50K cap",
+      "timestamp": "2025-08-24T14:30:05Z",
+      "decision_context": {
+        "symbol": "AAPL",
+        "intent": "BUY_1X", 
+        "quantity": 50,
+        "price": 200.00,
+        "strategy": "test",
+        "correlation_id": "case14_scenario1"
+      },
+      "expected_result": {
+        "approved": true,
+        "intent": "BUY_1X",
+        "blocked_by": [],
+        "warnings": []
+      },
+      "expected_metrics": {
+        "cap_blocks_total": 0,
+        "cooldown_blocks_total": 0
+      }
+    },
+    {
+      "name": "Scenario 2: Symbol Cap Breach - Should Convert BUY→HOLD", 
+      "description": "AAPL position would exceed $50K cap (current $40K + proposed $15K = $55K)",
+      "timestamp": "2025-08-24T14:30:10Z",
+      "decision_context": {
+        "symbol": "AAPL",
+        "intent": "BUY_1X",
+        "quantity": 75,
+        "price": 200.00,
+        "strategy": "test", 
+        "correlation_id": "case14_scenario2"
+      },
+      "expected_result": {
+        "approved": true,
+        "intent": "HOLD",
+        "blocked_by": [],
+        "warnings": ["caps_symbol_55000_exceeds_50000"]
+      },
+      "expected_metrics": {
+        "soft_gate_conversion_total": 1,
+        "cap_warnings_total": 1
+      }
+    },
+    {
+      "name": "Scenario 3: Concentration Limit Breach - Should Convert BUY→HOLD",
+      "description": "NVDA position would exceed 20% portfolio concentration",
+      "timestamp": "2025-08-24T14:30:15Z", 
+      "decision_context": {
+        "symbol": "NVDA",
+        "intent": "BUY_1X",
+        "quantity": 350,
+        "price": 119.00,
+        "strategy": "test",
+        "correlation_id": "case14_scenario3"
+      },
+      "expected_result": {
+        "approved": true,
+        "intent": "HOLD", 
+        "blocked_by": [],
+        "warnings": ["caps_concentration_20.8_exceeds_20.0_pct"]
+      },
+      "expected_metrics": {
+        "soft_gate_conversion_total": 2,
+        "cap_warnings_total": 2
+      }
+    },
+    {
+      "name": "Scenario 4: Daily Trade Limit - Should Convert BUY→HOLD",
+      "description": "Fourth trade for AAPL exceeds daily limit of 3",
+      "setup_trades": [
+        {"symbol": "AAPL", "intent": "BUY_1X", "timestamp": "2025-08-24T09:35:00Z"},
+        {"symbol": "AAPL", "intent": "REDUCE", "timestamp": "2025-08-24T10:15:00Z"}, 
+        {"symbol": "AAPL", "intent": "BUY_1X", "timestamp": "2025-08-24T11:45:00Z"}
+      ],
+      "timestamp": "2025-08-24T14:30:20Z",
+      "decision_context": {
+        "symbol": "AAPL", 
+        "intent": "BUY_1X",
+        "quantity": 25,
+        "price": 200.00,
+        "strategy": "test",
+        "correlation_id": "case14_scenario4"
+      },
+      "expected_result": {
+        "approved": true,
+        "intent": "HOLD",
+        "blocked_by": [],
+        "warnings": ["caps_daily_trades_3_exceeds_3"]
+      }
+    },
+    {
+      "name": "Scenario 5: Cooldown Active - Should Convert BUY→HOLD",
+      "description": "TSLA trade within 30-second cooldown period",
+      "setup_trade": {
+        "symbol": "TSLA",
+        "intent": "BUY_1X", 
+        "timestamp": "2025-08-24T14:30:00Z"
+      },
+      "timestamp": "2025-08-24T14:30:20Z",
+      "decision_context": {
+        "symbol": "TSLA",
+        "intent": "BUY_1X",
+        "quantity": 50,
+        "price": 195.00,
+        "strategy": "test",
+        "correlation_id": "case14_scenario5"
+      },
+      "expected_result": {
+        "approved": true,
+        "intent": "HOLD", 
+        "blocked_by": [],
+        "warnings": ["cooldown_same_side_remaining_10s"]
+      }
+    },
+    {
+      "name": "Scenario 6: Opposite Trade During Cooldown - Should Pass",
+      "description": "REDUCE trade allowed during BUY cooldown (opposite direction)",
+      "setup_trade": {
+        "symbol": "TSLA",
+        "intent": "BUY_1X",
+        "timestamp": "2025-08-24T14:30:25Z"
+      },
+      "timestamp": "2025-08-24T14:30:35Z",
+      "decision_context": {
+        "symbol": "TSLA", 
+        "intent": "REDUCE",
+        "quantity": 25,
+        "price": 195.00,
+        "strategy": "test",
+        "correlation_id": "case14_scenario6"
+      },
+      "expected_result": {
+        "approved": true,
+        "intent": "REDUCE",
+        "blocked_by": [],
+        "warnings": []
+      }
+    },
+    {
+      "name": "Scenario 7: Risk-Reducing Trade - Always Allowed",
+      "description": "REDUCE trades bypass caps and cooldown restrictions",
+      "timestamp": "2025-08-24T14:30:40Z",
+      "decision_context": {
+        "symbol": "AAPL",
+        "intent": "REDUCE", 
+        "quantity": 100,
+        "price": 200.00,
+        "strategy": "test",
+        "correlation_id": "case14_scenario7"
+      },
+      "expected_result": {
+        "approved": true,
+        "intent": "REDUCE",
+        "blocked_by": [],
+        "warnings": []
+      }
+    },
+    {
+      "name": "Scenario 8: Pre-Send Price Drift - Order Cancelled",
+      "description": "Order cancelled due to 3% price drift between decision and send",
+      "timestamp": "2025-08-24T14:30:45Z",
+      "decision_context": {
+        "symbol": "NVDA",
+        "intent": "BUY_1X",
+        "quantity": 50, 
+        "price": 119.00,
+        "strategy": "test",
+        "correlation_id": "case14_scenario8"
+      },
+      "price_drift_simulation": {
+        "decision_price": 119.00,
+        "send_price": 122.60,
+        "drift_pct": 3.0
+      },
+      "expected_result": {
+        "approved": true,
+        "intent": "BUY_1X",
+        "outbox_result": "cancelled",
+        "cancellation_reason": "price_drift_3.0_pct_exceeds_2.0"
+      },
+      "expected_metrics": {
+        "paper_order_cancelled_total": 1,
+        "outbox_guard_price_drift_pct": 3.0
+      }
+    },
+    {
+      "name": "Scenario 9: Stale Decision - Order Cancelled", 
+      "description": "Order cancelled due to 12-second staleness (exceeds 10s limit)",
+      "timestamp": "2025-08-24T14:30:50Z",
+      "decision_context": {
+        "symbol": "AAPL",
+        "intent": "BUY_1X",
+        "quantity": 30,
+        "price": 200.00,
+        "strategy": "test",
+        "correlation_id": "case14_scenario9"
+      },
+      "staleness_simulation": {
+        "decision_time": "2025-08-24T14:30:50Z",
+        "send_time": "2025-08-24T14:31:02Z",
+        "staleness_sec": 12
+      },
+      "expected_result": {
+        "approved": true,
+        "intent": "BUY_1X", 
+        "outbox_result": "cancelled",
+        "cancellation_reason": "decision_stale_12.0s_exceeds_10.0s"
+      }
+    },
+    {
+      "name": "Scenario 10: Warn-Only Mode - All Pass with Warnings",
+      "description": "With enforce=false, all violations generate warnings but allow trades",
+      "config_override": {
+        "caps_cooldown.enforce": false,
+        "caps_cooldown.cooldown.enforce": false
+      },
+      "timestamp": "2025-08-24T14:31:00Z",
+      "decision_context": {
+        "symbol": "AAPL",
+        "intent": "BUY_1X",
+        "quantity": 100,
+        "price": 200.00,
+        "strategy": "test", 
+        "correlation_id": "case14_scenario10"
+      },
+      "expected_result": {
+        "approved": true,
+        "intent": "BUY_1X",
+        "blocked_by": [],
+        "warnings": ["warn_only_mode"]
+      },
+      "expected_metrics": {
+        "cap_warnings_total": 3,
+        "cooldown_warnings_total": 1
+      }
+    }
+  ],
+  "slack_commands_test": [
+    {
+      "command": "/caps",
+      "expected_response_contains": [
+        "Position Caps Status",
+        "AAPL",
+        "40000 /    50000", 
+        "80.0%"
+      ]
+    },
+    {
+      "command": "/set-cap AAPL 75000 ttl=60m reason=\"market opportunity\"",
+      "expected_response_contains": [
+        "Updated cap for AAPL",
+        "New cap: $75000 (was $50000)",
+        "Effective until:",
+        "Reason: market opportunity"
+      ]
+    },
+    {
+      "command": "/cooldowns", 
+      "expected_response_contains": [
+        "Active Cooldowns",
+        "TSLA"
+      ]
+    },
+    {
+      "command": "/override-cap NVDA reason=\"emergency breakout\"",
+      "expected_response_contains": [
+        "EMERGENCY CAP OVERRIDE for NVDA",
+        "Emergency cap: $1000000"
+      ]
+    }
+  ],
+  "success_criteria": [
+    "All 10 test scenarios pass with expected results",
+    "Soft gate semantics work: caps/cooldown violations convert BUY→HOLD",
+    "Hard gate semantics work: risk-reducing trades always allowed", 
+    "Pre-send outbox guard catches price drift and staleness",
+    "Warn-only mode generates warnings without blocking",
+    "Slack commands return expected responses",
+    "All expected metrics are recorded",
+    "Decision latency remains <50ms p95 with caps/cooldown checks",
+    "No memory leaks or race conditions during concurrent testing"
+  ],
+  "performance_targets": {
+    "decision_latency_p95_ms": 50,
+    "caps_check_overhead_ms": 5,
+    "cooldown_check_overhead_ms": 3,
+    "outbox_guard_latency_ms": 10,
+    "concurrent_decisions_per_sec": 100
+  }
+}

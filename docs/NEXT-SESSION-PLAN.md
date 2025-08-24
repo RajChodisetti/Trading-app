@@ -1,307 +1,449 @@
-# Session 14 Plan: Portfolio Caps and Cooldown Gates
+# Session 15 Plan: Real Adapter Integration
 
 ## Overview
 
-Implement comprehensive position limits and trade spacing controls to prevent overconcentration and excessive trading frequency. Build upon Session 13's circuit breaker foundation to add symbol-level caps, daily trading limits, and cooldown periods that ensure disciplined position sizing and trade execution.
+Replace remaining mock adapters with live market data feeds, implementing robust error handling, rate limiting, and graceful degradation. Build upon Sessions 13-14's risk management foundation to ensure all existing circuit breaker and position control protections remain active while transitioning to real-time data sources.
 
 ## What's Changed vs. Previous Sessions
 
-- **Position Management**: Move from portfolio-wide circuit breakers to granular symbol-level controls
-- **Trade Frequency Control**: Implement cooldown periods to prevent rapid-fire trading and overtrading
-- **Exposure Limits**: Add configurable caps for individual symbols, sectors, and total portfolio exposure
-- **Integration with Risk Framework**: Seamlessly integrate with existing circuit breakers and risk gates
-- **Operational Flexibility**: Slack controls for adjusting limits and overriding restrictions during market opportunities
+- **Data Sources**: Transition from mock/stub data to live market data feeds (Alpha Vantage, Polygon, etc.)
+- **Error Resilience**: Implement robust fallback mechanisms when live feeds fail or rate-limit
+- **Performance Optimization**: Add caching, connection pooling, and efficient data parsing for real-time operations
+- **Risk Preservation**: Maintain all existing risk controls (circuit breakers, caps, cooldowns) with live data
+- **Operational Monitoring**: Enhanced observability for feed health, latency, and error rates
 
 ## Acceptance Criteria
 
-- **Symbol-Level Position Caps**: Maximum position sizes per symbol (e.g., max $50K in AAPL)
-- **Daily Trading Limits**: Maximum number of trades per symbol per day (e.g., max 5 trades in TSLA/day)
-- **Trade Cooldown Periods**: Minimum time between trades for same symbol (e.g., 30 seconds between NVDA trades)
-- **Portfolio Exposure Limits**: Total portfolio concentration limits (e.g., max 20% in any single symbol)
-- **Risk Gate Integration**: New CapsGate and CooldownGate that integrate with existing risk architecture
-- **Dynamic Configuration**: Real-time limit adjustments via Slack without system restart
-- **Comprehensive Testing**: Edge cases including limit breaches, cooldown violations, and recovery scenarios
+- **Live Quotes Integration**: Real-time bid/ask/last prices from Alpha Vantage or Polygon with <100ms latency
+- **News Feed Integration**: Live news ingestion from Reuters or Bloomberg with proper filtering and deduplication
+- **Halts Data**: Real-time trading halt notifications with immediate position freeze capability
+- **Error Handling**: Graceful degradation to cached data when live feeds fail, with clear operator alerts
+- **Rate Limit Management**: Respect API rate limits with intelligent queuing and backoff strategies
+- **Data Quality Validation**: Reject stale, malformed, or suspicious data with comprehensive logging
+- **Backwards Compatibility**: All existing functionality (caps, cooldowns, circuit breakers) works with live data
+- **Performance SLA**: Decision latency remains <200ms p95 even with live data integration
 
 ## Implementation Plan
 
-### 1) Position Caps Management (25 min)
+### 1) Live Quotes Adapter Enhancement (30 min)
 
-**Symbol-Level Position Tracking:**
+**Alpha Vantage Integration:**
 ```go
-type PositionCapsManager struct {
-    mu           sync.RWMutex
-    symbolCaps   map[string]PositionCap
-    currentExposure map[string]float64
-    portfolioMgr *portfolio.Manager
-    config       CapsConfig
-}
-
-type PositionCap struct {
-    Symbol           string    `json:"symbol"`
-    MaxPositionUSD   float64   `json:"max_position_usd"`
-    MaxPortfolioPct  float64   `json:"max_portfolio_pct"`
-    MaxDailyTrades   int       `json:"max_daily_trades"`
-    CurrentTrades    int       `json:"current_trades"`
-    LastResetTime    time.Time `json:"last_reset_time"`
-}
-
-type CapsConfig struct {
-    DefaultSymbolCapUSD     float64            `json:"default_symbol_cap_usd"`
-    DefaultPortfolioPct     float64            `json:"default_portfolio_pct"`
-    MaxSingleSymbolPct      float64            `json:"max_single_symbol_pct"`
-    SymbolSpecificCaps      map[string]float64 `json:"symbol_specific_caps"`
-    DailyTradeLimit         int                `json:"daily_trade_limit"`
-    ConcentrationLimitPct   float64            `json:"concentration_limit_pct"`
-}
-```
-
-**Key Features:**
-- Real-time position exposure tracking per symbol
-- Configurable caps with defaults and symbol-specific overrides
-- Portfolio concentration monitoring (max % in any single symbol)
-- Daily trade counting with automatic reset at market open
-- Integration with existing portfolio manager
-
-### 2) Trade Cooldown System (20 min)
-
-**Cooldown Period Enforcement:**
-```go
-type CooldownManager struct {
-    mu               sync.RWMutex
-    lastTradeTimes   map[string]time.Time  // symbol -> last trade time
-    cooldownPeriods  map[string]time.Duration // symbol -> cooldown period
-    globalCooldown   time.Duration
-    config           CooldownConfig
-}
-
-type CooldownConfig struct {
-    DefaultCooldownSec    int                       `json:"default_cooldown_sec"`
-    SymbolCooldowns       map[string]int            `json:"symbol_cooldowns"`
-    GlobalCooldownSec     int                       `json:"global_cooldown_sec"`
-    IntentSpecificCooldowns map[string]int          `json:"intent_cooldowns"`
-    VolatilityAdjustments bool                      `json:"volatility_adjustments"`
-}
-
-func (cm *CooldownManager) CanTrade(symbol, intent string, timestamp time.Time) (bool, time.Duration, error) {
-    cm.mu.RLock()
-    defer cm.mu.RUnlock()
-    
-    lastTradeTime, exists := cm.lastTradeTimes[symbol]
-    if !exists {
-        return true, 0, nil // First trade for this symbol
-    }
-    
-    cooldownPeriod := cm.getCooldownPeriod(symbol, intent)
-    timeSinceLastTrade := timestamp.Sub(lastTradeTime)
-    
-    if timeSinceLastTrade < cooldownPeriod {
-        remaining := cooldownPeriod - timeSinceLastTrade
-        return false, remaining, nil
-    }
-    
-    return true, 0, nil
-}
-```
-
-**Cooldown Logic:**
-- **Symbol-Specific**: Different cooldown periods per symbol (e.g., 30s for AAPL, 60s for TSLA)
-- **Intent-Specific**: Longer cooldowns for aggressive positions (BUY_5X) vs conservative (REDUCE)
-- **Volatility-Aware**: Longer cooldowns during high volatility periods
-- **Global Override**: Minimum cooldown between any trades across all symbols
-
-### 3) Risk Gate Integration (20 min)
-
-**CapsGate Implementation:**
-```go
-type CapsGate struct {
-    capsManager *PositionCapsManager
+type AlphaVantageAdapter struct {
+    client      *http.Client
+    apiKey      string
+    rateLimiter *rate.Limiter
+    cache       *QuoteCache
+    config      AlphaVantageConfig
     logger      *log.Logger
 }
 
-func (cg *CapsGate) Evaluate(ctx DecisionContext, riskData RiskData) (bool, string, error) {
-    // Check symbol position cap
-    currentExposure := cg.capsManager.GetSymbolExposure(ctx.Symbol)
-    proposedExposure := currentExposure + (ctx.Quantity * ctx.Price)
-    
-    symbolCap := cg.capsManager.GetSymbolCap(ctx.Symbol)
-    if proposedExposure > symbolCap.MaxPositionUSD {
-        return false, fmt.Sprintf("position_cap_exceeded_%.0f_of_%.0f", 
-            proposedExposure, symbolCap.MaxPositionUSD), nil
-    }
-    
-    // Check portfolio concentration limit
-    portfolioValue := riskData.CurrentNAV
-    concentrationPct := (proposedExposure / portfolioValue) * 100
-    
-    if concentrationPct > symbolCap.MaxPortfolioPct {
-        return false, fmt.Sprintf("concentration_limit_%.1f_exceeds_%.1f_pct", 
-            concentrationPct, symbolCap.MaxPortfolioPct), nil
-    }
-    
-    // Check daily trade limit
-    if symbolCap.CurrentTrades >= symbolCap.MaxDailyTrades {
-        return false, fmt.Sprintf("daily_trade_limit_%d_exceeded", 
-            symbolCap.MaxDailyTrades), nil
-    }
-    
-    return true, "position_within_limits", nil
-}
-```
-
-**CooldownGate Implementation:**
-```go
-type CooldownGate struct {
-    cooldownMgr *CooldownManager
+type AlphaVantageConfig struct {
+    APIKey           string        `json:"api_key"`
+    BaseURL          string        `json:"base_url"`
+    RequestsPerMin   int           `json:"requests_per_min"`
+    TimeoutSeconds   int           `json:"timeout_seconds"`
+    CacheExpiryMs    int           `json:"cache_expiry_ms"`
+    RetryAttempts    int           `json:"retry_attempts"`
+    FallbackToCache  bool          `json:"fallback_to_cache"`
 }
 
-func (cg *CooldownGate) Evaluate(ctx DecisionContext, riskData RiskData) (bool, string, error) {
-    canTrade, remaining, err := cg.cooldownMgr.CanTrade(ctx.Symbol, ctx.Intent, ctx.Timestamp)
-    if err != nil {
-        return false, "cooldown_check_error", err
-    }
+func (av *AlphaVantageAdapter) GetQuotes(symbols []string) (map[string]Quote, error) {
+    quotes := make(map[string]Quote)
     
-    if !canTrade {
-        return false, fmt.Sprintf("cooldown_active_%ds_remaining", 
-            int(remaining.Seconds())), nil
-    }
-    
-    return true, "cooldown_cleared", nil
-}
-```
-
-### 4) Slack Controls and Monitoring (15 min)
-
-**Position Caps Dashboard:**
-```
-📊 *Position Caps Status* (Updated: 14:23:15 EST)
-┌─ Symbol Exposures:
-├── AAPL: $42,350 / $50,000 (84.7%) ✅
-├── NVDA: $38,120 / $40,000 (95.3%) ⚠️ 
-├── TSLA: $15,670 / $30,000 (52.2%) ✅
-└── SPY:  $25,890 / $60,000 (43.1%) ✅
-
-┌─ Daily Trade Counts:
-├── AAPL: 3/5 trades ✅
-├── NVDA: 5/5 trades ⚠️ LIMIT REACHED
-├── TSLA: 1/5 trades ✅ 
-└── SPY:  2/8 trades ✅
-
-┌─ Portfolio Concentration:
-├── Max Single Symbol: 18.2% (NVDA) / 20.0% limit ✅
-├── Top 3 Concentration: 52.1% / 60.0% limit ✅
-└── Cash Reserve: $28,450 (12.8%) ✅
-
-🔄 *Active Cooldowns*:
-├── NVDA: 23s remaining (last trade: 14:22:52)
-└── AAPL: 7s remaining (last trade: 14:23:08)
-```
-
-**Slack Commands:**
-- `/caps` - Show position caps and current exposures
-- `/cooldowns` - Show active cooldowns and trade history
-- `/set-cap AAPL 60000` - Adjust symbol position cap
-- `/set-cooldown TSLA 45` - Adjust symbol cooldown period
-- `/override-cap NVDA temp_emergency` - Temporary cap override with reason
-- `/reset-trades AAPL` - Reset daily trade counter (with confirmation)
-
-### 5) Configuration and Persistence (10 min)
-
-**Dynamic Configuration:**
-```go
-type CapsAndCooldownConfig struct {
-    SymbolCaps map[string]PositionCap `json:"symbol_caps"`
-    Cooldowns  CooldownConfig         `json:"cooldowns"`
-    UpdatedAt  time.Time              `json:"updated_at"`
-    UpdatedBy  string                 `json:"updated_by"`
-    Reason     string                 `json:"reason"`
-}
-
-func (config *CapsAndCooldownConfig) UpdateSymbolCap(symbol string, newCapUSD float64, updatedBy, reason string) error {
-    config.mu.Lock()
-    defer config.mu.Unlock()
-    
-    if cap, exists := config.SymbolCaps[symbol]; exists {
-        cap.MaxPositionUSD = newCapUSD
-        config.SymbolCaps[symbol] = cap
-    } else {
-        config.SymbolCaps[symbol] = PositionCap{
-            Symbol:         symbol,
-            MaxPositionUSD: newCapUSD,
-            MaxPortfolioPct: config.DefaultPortfolioPct,
+    for _, symbol := range symbols {
+        // Check cache first
+        if cached, found := av.cache.Get(symbol); found && !cached.IsStale() {
+            quotes[symbol] = cached
+            continue
+        }
+        
+        // Rate limit check
+        if err := av.rateLimiter.Wait(context.Background()); err != nil {
+            return av.fallbackToCache(symbols, err)
+        }
+        
+        // Make API request
+        quote, err := av.fetchQuote(symbol)
+        if err != nil {
+            av.logger.Printf("Failed to fetch %s from AlphaVantage: %v", symbol, err)
+            // Try cache fallback
+            if cached, found := av.cache.Get(symbol); found {
+                quote = cached
+            } else {
+                continue // Skip this symbol
+            }
+        }
+        
+        // Validate quote quality
+        if av.isQuoteValid(quote) {
+            av.cache.Set(symbol, quote)
+            quotes[symbol] = quote
         }
     }
     
-    config.UpdatedAt = time.Now()
-    config.UpdatedBy = updatedBy
-    config.Reason = reason
-    
-    return config.persist()
+    return quotes, nil
 }
 ```
 
-**Persistence Strategy:**
-- Configuration changes persisted to `data/caps_cooldown_config.json`
-- Trade history and cooldown state maintained in memory with periodic snapshots
-- Automatic daily reset of trade counters at market open
-- Audit trail of all configuration changes with user and reason
-
-### 6) Testing and Edge Cases (10 min)
-
-**Comprehensive Test Scenarios:**
+**Quote Caching and Validation:**
 ```go
-func TestPositionCapsScenarios(t *testing.T) {
-    testCases := []struct {
-        name           string
-        currentExposure float64
-        proposedTrade   Trade
-        shouldPass     bool
-        expectedReason string
-    }{
-        {
-            name: "within_symbol_cap",
-            currentExposure: 45000,
-            proposedTrade: Trade{Symbol: "AAPL", Quantity: 10, Price: 200}, // +$2K
-            shouldPass: true,
-        },
-        {
-            name: "exceeds_symbol_cap", 
-            currentExposure: 48000,
-            proposedTrade: Trade{Symbol: "AAPL", Quantity: 25, Price: 200}, // +$5K = $53K
-            shouldPass: false,
-            expectedReason: "position_cap_exceeded",
-        },
-        {
-            name: "exceeds_concentration_limit",
-            // Test portfolio concentration scenarios
-        },
-        {
-            name: "daily_trade_limit_reached",
-            // Test daily trade counting
-        },
+type QuoteCache struct {
+    mu      sync.RWMutex
+    quotes  map[string]CachedQuote
+    expiry  time.Duration
+}
+
+type CachedQuote struct {
+    Quote     Quote     `json:"quote"`
+    Timestamp time.Time `json:"timestamp"`
+}
+
+func (qc *QuoteCache) Get(symbol string) (Quote, bool) {
+    qc.mu.RLock()
+    defer qc.mu.RUnlock()
+    
+    cached, exists := qc.quotes[symbol]
+    if !exists {
+        return Quote{}, false
+    }
+    
+    if time.Since(cached.Timestamp) > qc.expiry {
+        return Quote{}, false // Expired
+    }
+    
+    return cached.Quote, true
+}
+
+func (av *AlphaVantageAdapter) isQuoteValid(quote Quote) bool {
+    // Data quality checks
+    if quote.Bid <= 0 || quote.Ask <= 0 || quote.Last <= 0 {
+        return false
+    }
+    
+    // Spread sanity check
+    spread := (quote.Ask - quote.Bid) / quote.Last
+    if spread > 0.05 { // 5% spread seems suspicious
+        return false
+    }
+    
+    // Timestamp recency check
+    if time.Since(quote.Timestamp) > 5*time.Minute {
+        return false // Too stale
+    }
+    
+    return true
+}
+```
+
+### 2) Live News Feed Integration (25 min)
+
+**Reuters/Bloomberg Adapter:**
+```go
+type NewsAdapter struct {
+    client      *http.Client
+    config      NewsConfig
+    deduplicator *NewsDeduplicator
+    processor   *NewsProcessor
+}
+
+type NewsConfig struct {
+    Provider        string   `json:"provider"` // "reuters" or "bloomberg"
+    APIKey         string   `json:"api_key"`
+    WebhookURL     string   `json:"webhook_url"`
+    Categories     []string `json:"categories"`
+    MinConfidence  float64  `json:"min_confidence"`
+    MaxArticlesPerMin int   `json:"max_articles_per_min"`
+}
+
+func (na *NewsAdapter) StreamNews(ctx context.Context) (<-chan NewsItem, error) {
+    newsChan := make(chan NewsItem, 100)
+    
+    go func() {
+        defer close(newsChan)
+        
+        for {
+            select {
+            case <-ctx.Done():
+                return
+            default:
+                articles, err := na.fetchLatestNews()
+                if err != nil {
+                    na.logError("Failed to fetch news", err)
+                    time.Sleep(10 * time.Second)
+                    continue
+                }
+                
+                for _, article := range articles {
+                    // Deduplication check
+                    if na.deduplicator.IsDuplicate(article) {
+                        continue
+                    }
+                    
+                    // Process and extract signals
+                    newsItem, err := na.processor.Process(article)
+                    if err != nil {
+                        continue
+                    }
+                    
+                    // Quality filter
+                    if newsItem.Confidence >= na.config.MinConfidence {
+                        newsChan <- newsItem
+                    }
+                }
+                
+                time.Sleep(30 * time.Second) // Poll every 30 seconds
+            }
+        }
+    }()
+    
+    return newsChan, nil
+}
+```
+
+**News Deduplication:**
+```go
+type NewsDeduplicator struct {
+    seen      map[string]time.Time
+    mu        sync.RWMutex
+    retention time.Duration
+}
+
+func (nd *NewsDeduplicator) IsDuplicate(article Article) bool {
+    nd.mu.Lock()
+    defer nd.mu.Unlock()
+    
+    // Clean old entries
+    nd.cleanup()
+    
+    // Generate content hash
+    hash := nd.generateHash(article.Title, article.Content)
+    
+    if _, exists := nd.seen[hash]; exists {
+        return true
+    }
+    
+    nd.seen[hash] = time.Now()
+    return false
+}
+
+func (nd *NewsDeduplicator) generateHash(title, content string) string {
+    // Simple content-based hash
+    h := sha256.Sum256([]byte(title + content))
+    return fmt.Sprintf("%x", h)[:16] // First 16 chars
+}
+```
+
+### 3) Trading Halts Real-Time Integration (20 min)
+
+**NYSE/NASDAQ Halts Feed:**
+```go
+type HaltsAdapter struct {
+    wsConn      *websocket.Conn
+    config      HaltsConfig
+    haltStatus  map[string]HaltInfo
+    mu          sync.RWMutex
+    alertChan   chan HaltAlert
+}
+
+type HaltInfo struct {
+    Symbol       string    `json:"symbol"`
+    Halted       bool      `json:"halted"`
+    Reason       string    `json:"reason"`
+    HaltTime     time.Time `json:"halt_time"`
+    ResumeTime   *time.Time `json:"resume_time,omitempty"`
+    LastUpdated  time.Time `json:"last_updated"`
+}
+
+func (ha *HaltsAdapter) ConnectStream(ctx context.Context) error {
+    conn, _, err := websocket.DefaultDialer.Dial(ha.config.WebSocketURL, nil)
+    if err != nil {
+        return fmt.Errorf("failed to connect to halts stream: %w", err)
+    }
+    
+    ha.wsConn = conn
+    
+    go func() {
+        defer conn.Close()
+        
+        for {
+            select {
+            case <-ctx.Done():
+                return
+            default:
+                var haltMsg HaltMessage
+                if err := conn.ReadJSON(&haltMsg); err != nil {
+                    ha.logError("Failed to read halt message", err)
+                    continue
+                }
+                
+                ha.processHaltMessage(haltMsg)
+            }
+        }
+    }()
+    
+    return nil
+}
+
+func (ha *HaltsAdapter) processHaltMessage(msg HaltMessage) {
+    ha.mu.Lock()
+    defer ha.mu.Unlock()
+    
+    haltInfo := HaltInfo{
+        Symbol:      msg.Symbol,
+        Halted:      msg.Action == "halt",
+        Reason:      msg.Reason,
+        HaltTime:    msg.Timestamp,
+        LastUpdated: time.Now(),
+    }
+    
+    // Update local state
+    ha.haltStatus[msg.Symbol] = haltInfo
+    
+    // Send alert for immediate action
+    if msg.Action == "halt" {
+        ha.alertChan <- HaltAlert{
+            Symbol:    msg.Symbol,
+            Halted:    true,
+            Reason:    msg.Reason,
+            Timestamp: msg.Timestamp,
+        }
+    }
+}
+```
+
+### 4) Error Handling and Circuit Breakers (15 min)
+
+**Feed Health Monitoring:**
+```go
+type FeedHealthMonitor struct {
+    feeds       map[string]*FeedHealth
+    mu          sync.RWMutex
+    alertMgr    *AlertManager
+}
+
+type FeedHealth struct {
+    Name            string        `json:"name"`
+    LastSuccessful  time.Time     `json:"last_successful"`
+    LastError       time.Time     `json:"last_error"`
+    ErrorCount      int           `json:"error_count"`
+    SuccessCount    int           `json:"success_count"`
+    LatencyP95      time.Duration `json:"latency_p95"`
+    Status          string        `json:"status"` // "healthy", "degraded", "failed"
+}
+
+func (fhm *FeedHealthMonitor) RecordSuccess(feedName string, latency time.Duration) {
+    fhm.mu.Lock()
+    defer fhm.mu.Unlock()
+    
+    health, exists := fhm.feeds[feedName]
+    if !exists {
+        health = &FeedHealth{Name: feedName}
+        fhm.feeds[feedName] = health
+    }
+    
+    health.LastSuccessful = time.Now()
+    health.SuccessCount++
+    health.LatencyP95 = fhm.updateLatencyMetric(health.LatencyP95, latency)
+    
+    // Update status
+    if health.ErrorCount > 0 && time.Since(health.LastError) > 5*time.Minute {
+        health.Status = "healthy"
     }
 }
 
-func TestCooldownScenarios(t *testing.T) {
+func (fhm *FeedHealthMonitor) RecordError(feedName string, err error) {
+    fhm.mu.Lock()
+    defer fhm.mu.Unlock()
+    
+    health := fhm.feeds[feedName]
+    health.LastError = time.Now()
+    health.ErrorCount++
+    
+    // Update status based on error rate
+    errorRate := float64(health.ErrorCount) / float64(health.SuccessCount + health.ErrorCount)
+    if errorRate > 0.1 {
+        health.Status = "degraded"
+    }
+    if errorRate > 0.5 {
+        health.Status = "failed"
+        fhm.alertMgr.SendAlert(fmt.Sprintf("Feed %s has failed (error rate %.1f%%)", feedName, errorRate*100))
+    }
+}
+```
+
+### 5) Configuration and Deployment (10 min)
+
+**Live Adapter Configuration:**
+```yaml
+# config/live_adapters.yaml
+adapters:
+  quotes:
+    provider: "alphavantage"
+    config:
+      api_key: "${ALPHAVANTAGE_API_KEY}"
+      requests_per_min: 60
+      cache_expiry_ms: 1000
+      fallback_to_cache: true
+      
+  news:
+    provider: "reuters"
+    config:
+      api_key: "${REUTERS_API_KEY}"
+      webhook_url: "${NEWS_WEBHOOK_URL}"
+      min_confidence: 0.7
+      max_articles_per_min: 30
+      
+  halts:
+    provider: "nasdaq"
+    config:
+      websocket_url: "wss://api.nasdaq.com/halts"
+      reconnect_attempts: 5
+      heartbeat_interval: 30
+      
+# Fallback behavior
+fallback:
+  quotes_cache_duration: "5m"
+  news_buffer_size: 1000  
+  halt_cache_duration: "1h"
+  emergency_mode_threshold: 0.5 # 50% failure rate triggers emergency mode
+```
+
+**Environment Variable Management:**
+```bash
+# Required API keys
+export ALPHAVANTAGE_API_KEY="your_key_here"
+export REUTERS_API_KEY="your_key_here"
+export POLYGON_API_KEY="your_key_here"
+
+# Feature flags
+export LIVE_QUOTES_ENABLED=true
+export LIVE_NEWS_ENABLED=true
+export LIVE_HALTS_ENABLED=true
+export FALLBACK_TO_MOCK_ON_ERROR=true
+```
+
+## Integration Testing Plan
+
+### Adapter Switch Testing:
+```go
+func TestAdapterSwitching(t *testing.T) {
     testCases := []struct {
         name           string
-        lastTradeTime  time.Time
-        currentTime    time.Time
-        cooldownPeriod time.Duration
-        shouldPass     bool
+        adapterConfig  string
+        expectedType   string
+        shouldFallback bool
     }{
         {
-            name: "cooldown_expired",
-            lastTradeTime: time.Now().Add(-60 * time.Second),
-            currentTime: time.Now(),
-            cooldownPeriod: 30 * time.Second,
-            shouldPass: true,
+            name: "alphavantage_quotes",
+            adapterConfig: "alphavantage",
+            expectedType: "*adapters.AlphaVantageAdapter",
         },
         {
-            name: "cooldown_active",
-            lastTradeTime: time.Now().Add(-15 * time.Second), 
-            currentTime: time.Now(),
-            cooldownPeriod: 30 * time.Second,
-            shouldPass: false,
+            name: "fallback_on_failure",
+            adapterConfig: "invalid_provider",
+            expectedType: "*adapters.MockAdapter",
+            shouldFallback: true,
         },
     }
 }
@@ -309,80 +451,30 @@ func TestCooldownScenarios(t *testing.T) {
 
 ## Success Metrics
 
-- **Position Control**: 100% enforcement of symbol caps with 0 breaches in testing
-- **Trade Frequency**: Cooldown violations <0.1%, average cooldown compliance 99.9%
-- **Performance Impact**: Position/cooldown checks add <10ms to decision latency
-- **Operational Efficiency**: Slack cap adjustments applied within 5s, no system restart required
-- **Risk Reduction**: Demonstrated prevention of overconcentration in backtesting scenarios
-
-## Dependencies
-
-- **Existing Infrastructure**: Risk manager, circuit breakers, portfolio manager, Slack integration
-- **Real-Time Data**: Current position values and portfolio NAV for exposure calculations
-- **Configuration Storage**: Persistent storage for caps and cooldown settings
-- **Time Management**: Accurate timestamp tracking for cooldown enforcement
+- **Data Quality**: >99% valid quotes with <100ms median latency
+- **Error Resilience**: <30s recovery time when primary feeds fail
+- **Risk Preservation**: All existing risk controls (caps, cooldowns, circuit breakers) maintain 100% effectiveness
+- **Performance**: Decision latency <200ms p95 with live data vs <50ms with mocks
+- **Uptime**: >99.9% system availability despite external feed issues
 
 ## Risk Mitigation
 
-- **Fail-Safe Defaults**: Conservative caps applied if configuration fails to load
-- **Grace Periods**: Brief grace periods for position caps during volatile market conditions
-- **Emergency Overrides**: Always available manual overrides via Slack for urgent market opportunities
-- **Audit Trail**: Complete logging of all cap adjustments, overrides, and violations
-- **Gradual Implementation**: Start with warning-only mode, progressively enforce restrictions
-
-## Integration Points
-
-### Enhanced Decision Engine Integration:
-```go
-// Add to risk gate evaluation
-gates := []RiskGate{
-    circuitBreakerGate,
-    dataQualityGate,
-    volatilityGate,
-    capsGate,           // New
-    cooldownGate,       // New
-}
-
-for _, gate := range gates {
-    passed, reason, err := gate.Evaluate(decisionCtx, riskData)
-    if !passed {
-        return DecisionResult{
-            Approved:  false,
-            BlockedBy: []string{reason},
-        }
-    }
-}
-```
-
-### Portfolio Manager Integration:
-```go
-// Update position tracking after successful trades
-func (pm *PositionManager) ExecuteTrade(trade Trade) error {
-    err := pm.updatePosition(trade)
-    if err != nil {
-        return err
-    }
-    
-    // Update caps manager
-    capsManager.RecordTrade(trade.Symbol, trade.Value(), time.Now())
-    
-    // Update cooldown manager  
-    cooldownManager.RecordTrade(trade.Symbol, time.Now())
-    
-    return nil
-}
-```
+- **Graceful Degradation**: System automatically falls back to cached/mock data when live feeds fail
+- **Rate Limit Protection**: Built-in throttling prevents API quota exhaustion
+- **Data Validation**: Multi-layer validation prevents bad data from affecting decisions
+- **Circuit Breakers**: Automatic feed isolation when error rates exceed thresholds
+- **Emergency Mode**: Manual override to disable live feeds and revert to mock data
 
 ## Evidence Required
 
-- Position caps prevent overexposure with accurate real-time tracking
-- Cooldown periods enforced correctly with sub-second precision timing
-- Slack controls allow real-time cap adjustments without system disruption
-- Integration with circuit breakers maintains all existing risk protections
-- Performance benchmarks show minimal impact on decision latency (<10ms overhead)
+- Live quotes showing real bid/ask spreads with proper validation
+- News ingestion processing 100+ articles/hour with deduplication working
+- Trading halts triggering immediate position freezes
+- Fallback mechanisms working smoothly when APIs fail
+- All existing risk controls (Session 13-14) operating correctly with live data
 
 ## Next Session Preview
 
-**Session 15: Real Adapter Integration** - Replace mock adapters with live market data feeds, starting with Alpha Vantage quotes adapter, implementing error handling, rate limiting, and graceful degradation while maintaining all existing risk controls and circuit breaker functionality.
+**Session 16: Production Hardening** - Implement comprehensive monitoring, alerting, automated failover, performance optimization, security hardening, and deployment automation to prepare the system for live trading operations.
 
-This session completes the core position management and trading discipline framework, providing granular control over individual symbol exposures and trade frequency while seamlessly integrating with the existing risk management infrastructure from Session 13.
+This session transitions the trading system from development/testing with mock data to production-ready operation with live market data feeds, while preserving all the risk management and safety controls built in previous sessions.

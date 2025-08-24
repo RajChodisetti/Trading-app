@@ -11,6 +11,14 @@ import (
 	"github.com/Rajchodisetti/trading-app/internal/portfolio"
 )
 
+// SoftGateResult represents the result of a soft gate evaluation
+type SoftGateResult struct {
+	Passed       bool   `json:"passed"`
+	Reason       string `json:"reason"`
+	NewIntent    string `json:"new_intent"`    // For BUY→HOLD conversions
+	Explanation  string `json:"explanation"`   // Detailed explanation
+}
+
 // RiskManager coordinates all risk management components
 type RiskManager struct {
 	mu sync.RWMutex
@@ -20,6 +28,13 @@ type RiskManager struct {
 	circuitBreaker     *CircuitBreaker
 	volatilityCalc     *VolatilityCalculator
 	observabilityMgr   *RiskObservabilityManager
+	
+	// Position management (Session 14)
+	capsManager      *PositionCapsManager
+	cooldownManager  *CooldownManager
+	
+	// Risk gates
+	riskGates        []RiskGate
 	
 	// Configuration
 	config RiskManagerConfig
@@ -266,7 +281,7 @@ func (rm *RiskManager) EvaluateDecision(ctx DecisionContext) DecisionResult {
 		RiskScore:      rm.calculateRiskScore(ctx, riskData),
 	}
 	
-	// Create risk gates
+	// Create risk gates with Session 14 additions
 	gates := []RiskGate{
 		&CircuitBreakerGate{},
 		&DataQualityGate{MinQualityScore: 0.8, MaxStalenessMs: 2000},
@@ -275,6 +290,14 @@ func (rm *RiskManager) EvaluateDecision(ctx DecisionContext) DecisionResult {
 			"normal":   1.0,  // Normal sizing
 			"volatile": 0.7,  // Reduce size in volatile markets
 		}},
+	}
+	
+	// Add caps and cooldown gates if available (Session 14)
+	if rm.capsManager != nil {
+		gates = append(gates, NewCapsGate(rm.capsManager))
+	}
+	if rm.cooldownManager != nil {
+		gates = append(gates, NewCooldownGate(rm.cooldownManager))
 	}
 	
 	// Evaluate gates in priority order
@@ -297,8 +320,32 @@ func (rm *RiskManager) EvaluateDecision(ctx DecisionContext) DecisionResult {
 		}
 		
 		if !approved {
-			result.Approved = false
-			result.BlockedBy = append(result.BlockedBy, reason)
+			// Check if this is a soft gate that should convert BUY→HOLD instead of blocking
+			if rm.isSoftGate(gate.Name()) && rm.isBuyIntent(ctx.Intent) {
+				// Convert BUY to HOLD for caps and cooldown violations
+				result.Intent = "HOLD"
+				result.Warnings = append(result.Warnings, reason)
+				
+				// Log the soft conversion
+				rm.observabilityMgr.LogStructuredEvent(
+					"soft_gate_conversion",
+					SeverityWarning,
+					"risk_manager",
+					fmt.Sprintf("Converted %s to HOLD due to %s: %s", ctx.Intent, gate.Name(), reason),
+					map[string]interface{}{
+						"gate": gate.Name(), 
+						"original_intent": ctx.Intent, 
+						"new_intent": "HOLD",
+						"reason": reason,
+					},
+					map[string]float64{},
+					ctx.CorrelationID,
+				)
+			} else {
+				// Hard gate - block the decision
+				result.Approved = false
+				result.BlockedBy = append(result.BlockedBy, reason)
+			}
 		} else if reason != "" {
 			// Gate passed but with warnings/adjustments
 			if gate.Name() == "volatility" {
@@ -627,4 +674,19 @@ func parseVolatilityMultiplier(reason string) float64 {
 		return multiplier
 	}
 	return 1.0
+}
+
+// Helper methods for soft gate logic
+
+func (rm *RiskManager) isSoftGate(gateName string) bool {
+	// Caps and cooldown gates are soft - convert BUY→HOLD instead of blocking
+	return gateName == "caps" || gateName == "cooldown"
+}
+
+func (rm *RiskManager) isBuyIntent(intent string) bool {
+	return intent == "BUY_1X" || intent == "BUY_5X"
+}
+
+func (rm *RiskManager) isRiskReducing(intent string) bool {
+	return intent == "REDUCE" || intent == "EXIT" || intent == "STOP" || intent == "HOLD"
 }

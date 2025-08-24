@@ -1,0 +1,129 @@
+# Session 14: Portfolio Caps and Cooldown Gates Configuration
+
+caps_cooldown:
+  # Enforcement controls - start with warn-only for safe rollout
+  enforce: false                       # Set to true after 10-minute warm-up period
+  
+  # Symbol-level position caps
+  default_symbol_cap_usd: 50000       # Default $50K per symbol
+  max_single_symbol_pct: 20.0         # Max 20% of portfolio in any symbol
+  portfolio_caps_enabled: true         # Enable portfolio concentration limits
+  
+  # Daily trading limits
+  daily_trade_limit: 5                # Max 5 trades per symbol per day
+  
+  # RTH (Regular Trading Hours) settings for daily reset
+  rth_open_hour: 9                    # 9:30 AM ET market open
+  rth_open_minute: 30
+  
+  # Symbol-specific caps (override defaults)
+  symbol_specific_caps:
+    AAPL: 60000                       # Higher cap for AAPL
+    SPY: 80000                        # Higher cap for SPY (ETF)
+    QQQ: 80000                        # Higher cap for QQQ (ETF) 
+    NVDA: 40000                       # Standard cap for NVDA
+    TSLA: 30000                       # Lower cap for volatile TSLA
+  
+  # Persistence settings
+  persist_path: "data/caps_cooldown_config.json"
+  
+  # Cooldown configuration
+  cooldown:
+    enforce: false                     # Start with warn-only
+    default_cooldown_sec: 30          # Default 30 second cooldown
+    global_cooldown_sec: 5            # Minimum 5 seconds between any trades
+    same_side_cooldown_sec: 45        # Longer cooldown for same-side trades
+    
+    # Intent-specific cooldowns (longer for aggressive positions)
+    intent_cooldowns:
+      BUY_1X: 30                      # 30 second cooldown for BUY_1X
+      BUY_5X: 60                      # 60 second cooldown for aggressive BUY_5X
+      REDUCE: 15                      # Shorter cooldown for risk-reducing trades
+      EXIT: 10                        # Very short cooldown for exits
+    
+    # Symbol-specific cooldowns (for volatile symbols)
+    symbol_cooldowns:
+      TSLA: 45                        # Longer cooldown for volatile TSLA
+      NVDA: 35                        # Slightly longer for NVDA
+      
+    # Policy settings
+    opposite_trades_allowed: true     # Allow opposite-side trades during cooldown
+    volatility_adjustments: false    # Disable volatility-based adjustments for now
+    
+    # Persistence
+    persist_path: "data/cooldown_state.json"
+
+# Runtime override settings (TTL-based overrides via Slack)
+runtime_overrides:
+  enabled: true
+  max_ttl_hours: 4                    # Maximum 4-hour TTL for overrides
+  audit_log_path: "data/caps_cooldown_audit.jsonl"
+  
+# Metrics and observability
+metrics:
+  enabled: true
+  
+  # Key metrics to track
+  track_metrics:
+    - "cap_blocks_total"              # Blocks by caps gate
+    - "cooldown_blocks_total"         # Blocks by cooldown gate  
+    - "cap_warnings_total"            # Warnings in warn-only mode
+    - "cooldown_warnings_total"       # Cooldown warnings
+    - "daily_trades"                  # Current daily trade count by symbol
+    - "exposure_pct"                  # Current exposure as % of NAV by symbol
+    - "max_symbol_concentration_pct"  # Max single symbol concentration
+    - "paper_order_cancelled_total"   # Orders cancelled by outbox guard
+    - "runtime_overrides_active"      # Count of active TTL overrides
+    - "outbox_guard_validations_total" # Pre-send validations
+    - "outbox_guard_price_drift_pct"  # Price drift measurements
+    - "outbox_guard_decision_staleness_sec" # Decision staleness
+  
+# Risk mitigation settings
+risk_mitigation:
+  # Fail-safe defaults if config loading fails
+  emergency_symbol_cap_usd: 25000     # Conservative emergency cap
+  emergency_cooldown_sec: 60          # Conservative emergency cooldown
+  
+  # Grace periods
+  cap_grace_period_sec: 30            # Allow 30s grace during volatile conditions
+  
+  # Price drift tolerances for outbox guard
+  max_price_drift_pct: 2.0           # Cancel orders with >2% price drift
+  max_decision_staleness_sec: 10      # Cancel decisions older than 10 seconds
+  
+# Rollout strategy
+rollout:
+  # Warm-up phase (warn-only)
+  warm_up_duration_min: 10           # 10 minutes warn-only before enforcement
+  
+  # Gradual enforcement
+  gradual_enforcement:
+    enabled: true
+    start_with_warnings: true        # Begin with warnings only
+    enforcement_delay_min: 5         # Wait 5 minutes between enforcement phases
+    
+  # Progressive caps enforcement
+  progressive_caps:
+    phase_1_pct: 150                 # Start by enforcing 150% of normal caps
+    phase_2_pct: 125                 # Then 125% of normal caps  
+    phase_3_pct: 100                 # Finally full enforcement
+    
+# Integration settings
+integration:
+  # Slack controls
+  slack_commands_enabled: true
+  slack_notification_channel: "#trading-risk"
+  slack_alert_channel: "#trading-alerts"
+  
+  # Decision engine integration
+  gate_priority_caps: 30              # Priority for caps gate (after session/liquidity)
+  gate_priority_cooldown: 35          # Priority for cooldown gate
+  
+  # Soft semantics
+  soft_gates_enabled: true           # Enable BUY→HOLD conversions
+  hard_block_gates:                  # Gates that should hard-block (never convert to HOLD)
+    - "circuit_breaker"
+    - "data_quality" 
+  soft_conversion_gates:             # Gates that should soft-convert BUY→HOLD
+    - "caps"
+    - "cooldown"
