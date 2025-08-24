@@ -1,0 +1,55 @@
+{
+  "version": 247,
+  "updated_at": "2025-08-24T18:12:26Z",
+  "positions": {
+    "AAPL": {
+      "quantity": 100,
+      "avg_entry_price": 225.5,
+      "entry_vwap": 225.5,
+      "current_notional": 20680,
+      "unrealized_pnl": -1869.9999999999989,
+      "last_trade_at": "2025-08-23T22:16:38-07:00",
+      "trade_count_today": 1,
+      "realized_pnl_today": 0
+    },
+    "NVDA": {
+      "quantity": 50,
+      "avg_entry_price": 118.75,
+      "entry_vwap": 118.75,
+      "current_notional": 22500,
+      "unrealized_pnl": 16562.5,
+      "last_trade_at": "2025-08-23T22:16:38-07:00",
+      "trade_count_today": 1,
+      "realized_pnl_today": 0
+    },
+    "SPY": {
+      "quantity": 200,
+      "avg_entry_price": 450.25,
+      "entry_vwap": 450.25,
+      "current_notional": 90050,
+      "unrealized_pnl": 0,
+      "last_trade_at": "2025-08-23T22:16:38-07:00",
+      "trade_count_today": 1,
+      "realized_pnl_today": 0
+    },
+    "TSLA": {
+      "quantity": 25,
+      "avg_entry_price": 195.8,
+      "entry_vwap": 195.8,
+      "current_notional": 4895,
+      "unrealized_pnl": 0,
+      "last_trade_at": "2025-08-23T22:16:38-07:00",
+      "trade_count_today": 1,
+      "realized_pnl_today": 0
+    }
+  },
+  "daily_stats": {
+    "date": "2025-08-23",
+    "total_exposure_usd": 123432.5,
+    "exposure_pct_capital": 123.43249999999999,
+    "new_exposure_today": 0,
+    "trades_today": 4,
+    "pnl_today": 0
+  },
+  "capital_base": 100000
+}

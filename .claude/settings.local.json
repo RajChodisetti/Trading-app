@@ -4,7 +4,8 @@
       "Bash(make:*)",
       "Bash(scripts/new-session.sh:*)",
       "Bash(go build:*)",
-      "Bash(go run:*)"
+      "Bash(go run:*)",
+      "Bash(go test:*)"
     ],
     "deny": [],
     "ask": []

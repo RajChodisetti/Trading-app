@@ -138,6 +138,41 @@ type Monitoring struct {
 	HealthCheckIntervalMinutes int `yaml:"health_check_interval_minutes"`
 }
 
+type QuotesConfig struct {
+	Adapter   string                     `yaml:"adapter"`   // mock | sim | alphavantage
+	Providers QuotesProviderConfigs      `yaml:"providers"`
+	HealthMonitor QuotesHealthMonitorConfig `yaml:"health_monitor"`
+}
+
+type QuotesProviderConfigs struct {
+	AlphaVantage AlphaVantageProviderConfig `yaml:"alphavantage"`
+	Polygon      PolygonProviderConfig      `yaml:"polygon"`
+}
+
+type AlphaVantageProviderConfig struct {
+	APIKeyEnv           string `yaml:"api_key_env"`
+	RateLimitPerMinute  int    `yaml:"rate_limit_per_minute"`
+	DailyCap            int    `yaml:"daily_cap"`
+	CacheTTLSeconds     int    `yaml:"cache_ttl_seconds"`
+	StaleCeilingSeconds int    `yaml:"stale_ceiling_seconds"`
+	TimeoutSeconds      int    `yaml:"timeout_seconds"`
+	MaxRetries          int    `yaml:"max_retries"`
+	BackoffBaseMs       int    `yaml:"backoff_base_ms"`
+}
+
+type PolygonProviderConfig struct {
+	APIKeyEnv          string `yaml:"api_key_env"`
+	RateLimitPerMinute int    `yaml:"rate_limit_per_minute"`
+	TimeoutSeconds     int    `yaml:"timeout_seconds"`
+}
+
+type QuotesHealthMonitorConfig struct {
+	MaxConsecutiveErrors       int `yaml:"max_consecutive_errors"`
+	HealthCheckIntervalSeconds int `yaml:"health_check_interval_seconds"`
+	FallbackThreshold          int `yaml:"fallback_threshold"`
+	RecoveryThreshold          int `yaml:"recovery_threshold"`
+}
+
 type Root struct {
 	TradingMode       string            `yaml:"trading_mode"` // paper | live | dry-run
 	GlobalPause       bool              `yaml:"global_pause"`
@@ -148,6 +183,7 @@ type Root struct {
 	EarningsEmbargo   EarningsEmbargo   `yaml:"earnings"`
 	Paper             Paper             `yaml:"paper"`
 	Wire              Wire              `yaml:"wire"`
+	Quotes            QuotesConfig      `yaml:"quotes"`
 	Slack             Slack             `yaml:"slack"`
 	RuntimeOverrides  RuntimeOverrides  `yaml:"runtime_overrides"`
 	Security          Security          `yaml:"security"`

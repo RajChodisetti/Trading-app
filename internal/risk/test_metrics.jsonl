@@ -1,0 +1,2 @@
+{"id":"cb_9","timestamp":"2025-08-24T11:01:30.248201-07:00","type":"state_changed","data":{"new_state":"normal","previous_state":"halted","size_multiplier":1,"state_duration_ms":0,"trigger_count":1},"correlation_id":"metrics_003","reason":"threshold_recovery"}
+{"id":"cb_8","timestamp":"2025-08-24T11:01:30.248197-07:00","type":"threshold_breached","data":{"adjusted_threshold":0,"daily_drawdown":1,"new_state":"normal","previous_state":"halted","threshold_type":"threshold_recovery","weekly_drawdown":1},"correlation_id":"metrics_003","reason":"threshold_recovery"}

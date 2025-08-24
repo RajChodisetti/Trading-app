@@ -32,6 +32,7 @@ type SlackMessage struct {
 	Channel     string            `json:"channel,omitempty"`
 	Text        string            `json:"text"`
 	Attachments []SlackAttachment `json:"attachments,omitempty"`
+	Blocks      []interface{}     `json:"blocks,omitempty"`
 }
 
 type AlertRequest struct {
@@ -440,4 +441,28 @@ func (s *SlackClient) GetMetrics() AlertMetrics {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return *s.metrics
+}
+
+// SendMessage sends a Block Kit message directly (used by RiskDashboard)
+func (s *SlackClient) SendMessage(msg SlackMessage) error {
+	if !s.cfg.Enabled {
+		return nil
+	}
+	
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal message: %w", err)
+	}
+	
+	resp, err := s.httpClient.Post(s.cfg.WebhookURL, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("webhook request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("webhook failed with status %d", resp.StatusCode)
+	}
+	
+	return nil
 }

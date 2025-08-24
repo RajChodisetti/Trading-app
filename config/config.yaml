@@ -105,11 +105,34 @@ wire:
 
 adapters:
   NEWS_FEED: stub            # later: benzinga|reuters|custom
-  QUOTES: sim                # later: polygon|broker
+  QUOTES: mock               # mock | sim | alphavantage | polygon
   HALTS: sim                 # later: nasdaq|nyse
   SENTIMENT: stub            # later: finbert|vendor
   BROKER: paper              # later: alpaca|ibkr
   ALERTS: stdout             # later: slack|email
+
+# Quote provider configurations
+quotes:
+  adapter: "mock"            # mock | sim | alphavantage
+  providers:
+    alphavantage:
+      api_key_env: "ALPHA_VANTAGE_API_KEY"
+      rate_limit_per_minute: 5
+      daily_cap: 300
+      cache_ttl_seconds: 60
+      stale_ceiling_seconds: 180
+      timeout_seconds: 10
+      max_retries: 3
+      backoff_base_ms: 1000
+    polygon:
+      api_key_env: "POLYGON_API_KEY"
+      rate_limit_per_minute: 100
+      timeout_seconds: 5
+  health_monitor:
+    max_consecutive_errors: 3
+    health_check_interval_seconds: 60
+    fallback_threshold: 3
+    recovery_threshold: 3
 
 slack:
   enabled: false

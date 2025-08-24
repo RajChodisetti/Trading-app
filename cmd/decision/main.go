@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Rajchodisetti/trading-app/internal/adapters"
 	"github.com/Rajchodisetti/trading-app/internal/alerts"
 	"github.com/Rajchodisetti/trading-app/internal/config"
 	"github.com/Rajchodisetti/trading-app/internal/decision"
@@ -550,6 +551,38 @@ func main() {
 		})
 	}
 
+	// Initialize quotes adapter
+	quotesFactory := adapters.NewQuotesAdapterFactory(adapters.QuotesConfig{
+		Adapter: cfg.Quotes.Adapter,
+		Providers: adapters.QuotesProviderConfigs{
+			AlphaVantage: adapters.AlphaVantageProviderConfig{
+				APIKeyEnv:           cfg.Quotes.Providers.AlphaVantage.APIKeyEnv,
+				RateLimitPerMinute:  cfg.Quotes.Providers.AlphaVantage.RateLimitPerMinute,
+				DailyCap:            cfg.Quotes.Providers.AlphaVantage.DailyCap,
+				CacheTTLSeconds:     cfg.Quotes.Providers.AlphaVantage.CacheTTLSeconds,
+				StaleCeilingSeconds: cfg.Quotes.Providers.AlphaVantage.StaleCeilingSeconds,
+				TimeoutSeconds:      cfg.Quotes.Providers.AlphaVantage.TimeoutSeconds,
+				MaxRetries:          cfg.Quotes.Providers.AlphaVantage.MaxRetries,
+				BackoffBaseMs:       cfg.Quotes.Providers.AlphaVantage.BackoffBaseMs,
+			},
+			Polygon: adapters.PolygonProviderConfig{
+				APIKeyEnv:          cfg.Quotes.Providers.Polygon.APIKeyEnv,
+				RateLimitPerMinute: cfg.Quotes.Providers.Polygon.RateLimitPerMinute,
+				TimeoutSeconds:     cfg.Quotes.Providers.Polygon.TimeoutSeconds,
+			},
+		},
+	})
+	
+	quotesAdapter, err := quotesFactory.CreateAdapter()
+	if err != nil {
+		log.Fatalf("failed to create quotes adapter: %v", err)
+	}
+	defer quotesAdapter.Close()
+	
+	observ.Log("quotes_adapter_init", map[string]any{
+		"adapter_type": cfg.Quotes.Adapter,
+	})
+
 	// Load data: either from wire streaming or fixtures
 	var hf haltsFile
 	var nf newsFile
@@ -676,6 +709,8 @@ func main() {
 
 	type key struct{ sym string }
 	features := map[key]decision.Features{}
+	
+	// Extract features from ticks file (for backward compatibility)
 	for _, t := range tf.Ticks {
 		// Calculate spread in basis points
 		spreadBps := 0.0
@@ -691,6 +726,74 @@ func main() {
 			Premarket:  t.Premarket,
 			Postmarket: t.Postmarket,
 			SpreadBps:  spreadBps,
+		}
+	}
+	
+	// Enrich features with real quotes from adapter
+	symbols := make([]string, 0, len(features))
+	for k := range features {
+		symbols = append(symbols, k.sym)
+	}
+	
+	// Fetch quotes from adapter if we have symbols to evaluate
+	if len(symbols) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		
+		quotes, err := quotesAdapter.GetQuotes(ctx, symbols)
+		if err != nil {
+			log.Printf("Failed to fetch quotes: %v", err)
+			observ.IncCounter("quote_fetch_errors_total", map[string]string{
+				"error_type": "batch_fetch_failed",
+			})
+		} else {
+			// Update features with real quote data
+			for symbol, quote := range quotes {
+				if err := adapters.ValidateQuote(quote); err != nil {
+					log.Printf("Invalid quote for %s: %v", symbol, err)
+					observ.IncCounter("quote_validation_errors_total", map[string]string{
+						"symbol": symbol,
+						"error":  "validation_failed",
+					})
+					continue
+				}
+				
+				k := key{strings.ToUpper(symbol)}
+				if existingFeatures, exists := features[k]; exists {
+					// Update with real quote data
+					features[k] = decision.Features{
+						Symbol:     strings.ToUpper(symbol),
+						Halted:     quote.Halted || existingFeatures.Halted, // Respect halt from both sources
+						Last:       quote.Last,
+						VWAP5m:     existingFeatures.VWAP5m,     // Keep existing VWAP
+						RelVolume:  existingFeatures.RelVolume, // Keep existing relative volume
+						Premarket:  quote.Session == "PRE",
+						Postmarket: quote.Session == "POST",
+						SpreadBps:  quote.SpreadBps(),
+					}
+				} else {
+					// Create new features from quote
+					features[k] = decision.Features{
+						Symbol:     strings.ToUpper(symbol),
+						Halted:     quote.Halted,
+						Last:       quote.Last,
+						VWAP5m:     quote.Last,   // Use last as fallback for VWAP
+						RelVolume:  1.0,          // Default relative volume
+						Premarket:  quote.Session == "PRE",
+						Postmarket: quote.Session == "POST",
+						SpreadBps:  quote.SpreadBps(),
+					}
+				}
+				
+				observ.IncCounter("quote_feature_updated_total", map[string]string{
+					"symbol": symbol,
+					"source": quote.Source,
+				})
+				observ.Observe("quote_staleness_ms", float64(quote.StalenessMs), map[string]string{
+					"symbol": symbol,
+					"source": quote.Source,
+				})
+			}
 		}
 	}
 

@@ -1,13 +1,13 @@
 # TODO - Trading System Development
 
 ## Now (Current Session Focus)
-- [x] Session 11 complete: Wire WebSocket/SSE streaming transport
-- [x] Update documentation with Session 11 progress
-- [x] Create next session plan for Session 12
+- [x] Session 12 complete: Real adapter integrations (quotes)
+- [x] Update documentation with Session 12 progress
+- [x] Create next session plan for Session 13
 
 ## Next (Priority Queue) 
-- [ ] Session 12: Real adapter integrations (start with quotes)
 - [ ] Session 13: Drawdown monitoring and circuit breakers
+- [ ] Session 14: Real news feed integration
 
 ## Later (Future Enhancements)
 - [ ] Portfolio tracking and PnL calculation
@@ -27,3 +27,4 @@
 - [x] Session 8: Slack alerts and operational controls (2025-08-22)
 - [x] Session 10: Advanced Risk Controls & Real-Time Monitoring (2025-08-23)
 - [x] Session 11: Wire WebSocket/SSE streaming transport (2025-08-23)
+- [x] Session 12: Real adapter integrations (quotes) (2025-08-24)

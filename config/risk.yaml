@@ -1,0 +1,90 @@
+# Risk Management Configuration for Session 13
+
+# NAV Tracking Configuration
+nav_tracker:
+  update_interval_seconds: 1
+  quote_staleness_threshold_ms: 2000
+  max_history_entries: 3600
+  use_mid_price: true
+  persist_path: "data/nav_state.json"
+
+# Circuit Breaker Thresholds
+circuit_breaker:
+  # Daily thresholds
+  daily_warning_pct: 2.0
+  daily_reduced_pct: 2.5
+  daily_restricted_pct: 3.0
+  daily_minimal_pct: 3.5
+  daily_halt_pct: 4.0
+  
+  # Weekly thresholds
+  weekly_warning_pct: 5.0
+  weekly_reduced_pct: 6.0
+  weekly_restricted_pct: 7.0
+  weekly_minimal_pct: 8.0
+  weekly_halt_pct: 10.0
+  
+  # Volatility adjustment
+  volatility_multiplier: 1.0
+  max_volatility_factor: 2.0
+  
+  # Size multipliers for each state
+  normal_size: 1.0
+  warning_size: 1.0
+  reduced_size: 0.7
+  restricted_size: 0.5
+  minimal_size: 0.25
+  halted_size: 0.0
+  cooling_off_size: 0.0
+  emergency_size: 0.0
+
+# Volatility Calculation Settings
+volatility:
+  lookback_days: 21
+  ewma_alpha: 0.94
+  atr_period: 14
+  volatility_floor: 0.5
+  volatility_ceiling: 3.0
+  quiet_market_threshold: 0.10
+  volatile_market_threshold: 0.30
+  update_interval_minutes: 5
+
+# Observability Settings
+event_log_path: "data/risk_events.jsonl"
+metrics_enabled: true
+alerting_enabled: true
+
+# Integration Settings  
+update_interval_seconds: 1
+decision_timeout_ms: 500
+
+# Recovery Requirements
+recovery:
+  required_approvals: ["U12345", "U67890"]  # User IDs requiring approval
+  cooldown_period_minutes: 30
+  max_drawdown_for_auto: 1.5
+  min_stability_period_minutes: 10
+  max_daily_halts: 3
+  quote_freshness_required: true
+
+# Risk Alert Thresholds
+alert_thresholds:
+  nav_update_latency_ms: 500
+  quote_staleness_seconds: 5
+  drawdown_slope_per_minute: 0.5
+  decision_latency_ms: 100
+  alert_latency_ms: 5000
+  data_quality_score: 0.8
+  component_health_score: 0.9
+  error_rate_percent: 1.0
+
+# Slack Integration for Risk Dashboard
+slack:
+  enabled: true
+  webhook_url: "${SLACK_WEBHOOK_URL}"
+  signing_secret: "${SLACK_SIGNING_SECRET}"
+  channel_default: "#trading-risk"
+  rate_limit_per_min: 10
+  alert_on_circuit_breaker: true
+  alert_on_data_quality: true
+  alert_on_drawdown: true
