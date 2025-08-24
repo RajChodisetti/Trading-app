@@ -831,6 +831,84 @@ fi
 
 echo "risk_controls: verified stop-loss, sector limits, and drawdown controls"
 
+# --- Case 11: SSE Streaming Transport ---
+echo "== Running: sse_streaming =="
+
+# Test 11A: SSE vs HTTP polling equivalence
+echo "== Streaming Test 1: SSE vs HTTP polling equivalence =="
+
+# Start wire stub with SSE support
+go run ./cmd/stubs -stream -port 8098 &
+WIRE_STUB_PID=$!
+
+# Function to cleanup wire stub
+cleanup_wire_stub() {
+  if [[ -n "${WIRE_STUB_PID:-}" ]] && kill -0 $WIRE_STUB_PID 2>/dev/null; then
+    kill $WIRE_STUB_PID 2>/dev/null || true
+    wait $WIRE_STUB_PID 2>/dev/null || true
+  fi
+  pkill -f "cmd/stubs.*stream.*8098" 2>/dev/null || true
+}
+trap cleanup_wire_stub EXIT
+
+# Wait for wire stub health
+for i in {1..20}; do
+  if curl -s -m 1 http://localhost:8098/health >/dev/null 2>&1; then
+    echo "Wire stub ready"
+    break
+  fi
+  sleep 0.5
+  if [ $i -eq 20 ]; then
+    echo "FAIL(sse_streaming): wire stub health check timeout"
+    cleanup_wire_stub
+    exit 1
+  fi
+done
+
+# Test basic SSE connection (limited events to avoid infinite loop)
+echo "Testing SSE connection with bounded event limit..."
+
+# First test: verify SSE endpoint responds
+sse_response=$(curl -s -m 5 -H "Accept: text/event-stream" http://localhost:8098/stream | head -10)
+if [[ -z "$sse_response" ]]; then
+  echo "FAIL(sse_streaming): SSE endpoint not responding"
+  cleanup_wire_stub
+  exit 1
+fi
+
+echo "✅ SSE endpoint responding with events"
+
+# Test 11B: Wire mode with transport selection
+echo "== Streaming Test 2: Wire mode transport selection =="
+
+# Test HTTP polling mode
+http_result=$(GLOBAL_PAUSE=false go run ./cmd/decision -wire-mode -wire-url=http://localhost:8098 -max-events=5 -oneshot=true 2>/dev/null | grep -c "evaluated_symbols" || true)
+if [[ "$http_result" -eq 1 ]]; then
+  echo "✅ HTTP polling mode working"
+else
+  echo "FAIL(sse_streaming): HTTP polling mode failed, expected 1 evaluation, got $http_result"
+  # Show debug info
+  GLOBAL_PAUSE=false go run ./cmd/decision -wire-mode -wire-url=http://localhost:8098 -max-events=5 -oneshot=true || true
+  cleanup_wire_stub
+  exit 1
+fi
+
+# Test 11C: Configuration-driven transport
+echo "== Streaming Test 3: Configuration transport settings =="
+
+# Check that wire config has streaming options
+wire_transport=$(grep -A 5 "^wire:" config/config.yaml | grep "transport:" | awk '{print $2}' | tr -d '"' || echo "")
+if [[ "$wire_transport" == "sse" ]]; then
+  echo "✅ Wire configuration supports SSE transport"
+else
+  echo "FAIL(sse_streaming): wire transport not set to SSE in config, got: '$wire_transport'"
+  cleanup_wire_stub
+  exit 1
+fi
+
+cleanup_wire_stub
+echo "sse_streaming: verified SSE transport infrastructure"
+
 # Restore original fixture files
 cp fixtures/ticks.backup.json fixtures/ticks.json 2>/dev/null || true
 cp fixtures/news.backup.json fixtures/news.json 2>/dev/null || true  

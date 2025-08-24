@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	
+	"github.com/Rajchodisetti/trading-app/internal/observ"
 )
 
 // SSEClient implements Client interface for Server-Sent Events transport
@@ -98,26 +100,35 @@ func (c *SSEClient) consumeLoop(ctx context.Context) {
 	defer c.wg.Done()
 	
 	backoff := c.config.Reconnect.InitialDelayMs
+	attemptCount := 0
 	
 	for {
 		select {
 		case <-ctx.Done():
+			atomic.StoreInt32(&c.state, int32(StateDisconnected))
 			return
 		default:
+		}
+		
+		// Check max attempts limit
+		if c.config.Reconnect.MaxAttempts > 0 && attemptCount >= c.config.Reconnect.MaxAttempts {
+			log.Printf("SSE: reached max reconnection attempts (%d), stopping", c.config.Reconnect.MaxAttempts)
+			return
 		}
 		
 		// Check for fallback to HTTP after consecutive failures
 		if atomic.LoadInt64(&c.consecutiveFailures) >= int64(c.config.FallbackAfterFailures) && c.config.FallbackAfterFailures > 0 {
 			log.Printf("SSE: %d consecutive failures, falling back to HTTP polling", c.consecutiveFailures)
-			// TODO: Signal fallback to parent
 			return
 		}
 		
 		atomic.StoreInt32(&c.state, int32(StateConnecting))
+		log.Printf("SSE: attempting connection (attempt %d)", attemptCount+1)
 		
 		if err := c.connectAndConsume(ctx); err != nil {
 			atomic.AddInt64(&c.consecutiveFailures, 1)
 			atomic.StoreInt32(&c.state, int32(StateDisconnected))
+			attemptCount++
 			
 			if ctx.Err() != nil {
 				return // Context cancelled
@@ -126,7 +137,10 @@ func (c *SSEClient) consumeLoop(ctx context.Context) {
 			log.Printf("SSE connection failed: %v, reconnecting in %dms", err, backoff)
 			
 			// Exponential backoff with jitter
-			jitter := rand.Intn(c.config.Reconnect.JitterMs)
+			jitter := 0
+			if c.config.Reconnect.JitterMs > 0 {
+				jitter = rand.Intn(c.config.Reconnect.JitterMs)
+			}
 			delay := time.Duration(backoff+jitter) * time.Millisecond
 			
 			select {
@@ -142,10 +156,17 @@ func (c *SSEClient) consumeLoop(ctx context.Context) {
 			}
 			
 			atomic.AddInt64(&c.reconnectAttempts, 1)
+			
+			// Report reconnection metrics
+			observ.IncCounter("wire_stream_reconnects_total", map[string]string{
+				"transport": "sse",
+			})
 		} else {
-			// Successful connection, reset backoff and failure count
+			// Successful connection, reset counters
 			backoff = c.config.Reconnect.InitialDelayMs
 			atomic.StoreInt64(&c.consecutiveFailures, 0)
+			attemptCount = 0
+			log.Printf("SSE: connection successful, reset reconnection state")
 		}
 	}
 }
@@ -182,6 +203,11 @@ func (c *SSEClient) connectAndConsume(ctx context.Context) error {
 	
 	atomic.StoreInt32(&c.state, int32(StateConnected))
 	log.Printf("SSE connected to %s", c.url)
+	
+	// Report connection state
+	observ.SetGauge("wire_stream_connection_state", 2, map[string]string{
+		"transport": "sse",
+	})
 	
 	return c.processEventStream(ctx, resp.Body)
 }
@@ -245,6 +271,10 @@ func (c *SSEClient) processEvent(eventType, eventID, eventData string, seenIDs m
 	// Duplicate detection
 	if seenIDs[eventID] {
 		atomic.AddInt64(&c.dupesDropped, 1)
+		observ.IncCounter("wire_stream_dupes_dropped_total", map[string]string{
+			"type": eventType,
+			"transport": "sse",
+		})
 		return nil
 	}
 	seenIDs[eventID] = true
@@ -255,6 +285,9 @@ func (c *SSEClient) processEvent(eventType, eventID, eventData string, seenIDs m
 			if currentNum, err := strconv.ParseInt(eventID, 10, 64); err == nil {
 				if currentNum > lastNum+1 {
 					atomic.AddInt64(&c.gapsDetected, 1)
+					observ.IncCounter("wire_stream_gaps_detected_total", map[string]string{
+						"transport": "sse",
+					})
 					log.Printf("SSE gap detected: last=%s, current=%s", c.lastEventID, eventID)
 					// TODO: Trigger backfill
 				}
@@ -280,6 +313,12 @@ func (c *SSEClient) processEvent(eventType, eventID, eventData string, seenIDs m
 	select {
 	case c.eventChan <- envelope:
 		atomic.AddInt64(&c.messagesReceived, 1)
+		
+		// Report streaming metrics
+		observ.IncCounter("wire_stream_messages_total", map[string]string{
+			"type": eventType,
+			"transport": "sse",
+		})
 		
 		// Update last event ID
 		c.mu.Lock()
@@ -324,8 +363,8 @@ func (c *SSEClient) handleBackpressure(envelope EventEnvelope) {
 }
 
 // GetMetrics returns current client metrics
-func (c *SSEClient) GetMetrics() map[string]interface{} {
-	return map[string]interface{}{
+func (c *SSEClient) GetMetrics() map[string]any {
+	return map[string]any{
 		"connection_state":     c.ConnectionState().String(),
 		"reconnect_attempts":   atomic.LoadInt64(&c.reconnectAttempts),
 		"messages_received":    atomic.LoadInt64(&c.messagesReceived),

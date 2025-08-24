@@ -1,194 +1,224 @@
-# Session 11 Plan: Wire WebSocket/SSE Streaming Transport
+# Session 12 Plan: Real Adapter Integrations (Start with Quotes)
 
 ## Overview
 
-Replace the current HTTP polling wire stub with real-time WebSocket or Server-Sent Events (SSE) streaming transport. Maintain deterministic testing while enabling low-latency data ingestion for production readiness.
+Replace the "sim" quotes adapter with a real market data provider integration while maintaining safety rails and deterministic testing. This session establishes the adapter pattern for future provider swaps and begins the transition from simulated to live market data.
 
 ## What's Changed vs. Previous Sessions
 
-- **Real-time Transport**: Move from polling-based HTTP to push-based streaming for sub-second latency
-- **Protocol Choice**: Evaluate WebSocket vs SSE based on simplicity and browser compatibility
-- **Backward Compatibility**: Maintain existing wire protocol contracts while upgrading transport
-- **Testing Strategy**: Keep deterministic fixture-based testing with streaming simulation
+- **Real Market Data**: Move from simulated quotes to actual market data feeds
+- **Adapter Pattern**: Establish clean abstraction for swapping data providers
+- **Provider Selection**: Start with a reliable, cost-effective quotes provider (Polygon, Alpha Vantage, or Twelve Data)
+- **Safety First**: Maintain paper trading mode and all existing safety gates
+- **Testing Strategy**: Keep deterministic tests with quote mocks while enabling live data option
 
 ## Acceptance Criteria
 
-- **Streaming Transport**: WebSocket or SSE client connects to wire stub and receives real-time events
-- **Connection Management**: Automatic reconnection with exponential backoff, connection health monitoring
-- **Protocol Compatibility**: All existing wire protocol events stream correctly with proper ordering
-- **Testing**: `make test` wire_mode case passes with streaming; fixtures drive deterministic event sequences
-- **Metrics**: Connection state, reconnection attempts, message rates, and latency tracking
-- **Graceful Degradation**: Falls back to HTTP polling if streaming unavailable
+- **Real Quotes Integration**: Successfully fetch live quotes from chosen provider with proper error handling
+- **Adapter Abstraction**: Clean interface allows easy swapping between sim/real/mock quote providers  
+- **Configuration Control**: Environment variables control which adapter to use (`QUOTES=sim|polygon|mock`)
+- **Market Hours**: Proper handling of pre-market, regular hours, after-hours, and market holidays
+- **Error Resilience**: Graceful degradation when quotes unavailable, with fallback to cached/stale data
+- **Testing**: All existing tests pass; new tests validate quote adapter behavior
+- **Metrics**: Quote fetch latency, error rates, cache hit rates, and provider-specific metrics
 
 ## Implementation Plan
 
-### 1) Protocol Selection & Architecture (15 min)
+### 1) Provider Research & Selection (15 min)
 
-**Decision Criteria:**
-- **WebSocket**: Full-duplex, binary support, connection overhead
-- **SSE**: Simpler, HTTP/2 compatible, browser-friendly, text-only
-- **Choice**: Start with SSE for simplicity, upgrade path to WebSocket later
+**Provider Options:**
+- **Polygon.io**: $99/month, real-time, excellent API, WebSocket support
+- **Alpha Vantage**: Free tier available, good for development, rate limited
+- **Twelve Data**: $8/month basic, good balance, multiple asset classes
+- **IEX Cloud**: Developer-friendly, reasonable pricing, good documentation
 
-**Architecture:**
-```
-Wire Stub Server (SSE) ←→ Decision Engine Client
-     ↓ streams                    ↓ processes  
-Fixture Events              → Decision Flow
-```
+**Selection Criteria:**
+- Cost for development/testing
+- API reliability and documentation quality  
+- Rate limits and real-time capabilities
+- Market coverage (US equities minimum)
 
-### 2) SSE Wire Stub Server (20 min)
+**Decision**: Start with **Alpha Vantage** for free development, upgrade path to Polygon for production
 
-**Enhanced cmd/stubs/main.go:**
-- Add `/stream` SSE endpoint alongside existing HTTP endpoints
-- Stream fixture events with proper `data:`, `event:`, `id:` formatting
-- Maintain cursor-based event ordering and replay capability
-- Add connection tracking and client management
+### 2) Adapter Interface Design (20 min)
 
-**SSE Event Format:**
-```
-event: tick
-id: 1692123456789
-data: {"symbol":"AAPL","last":210.02,"ts_utc":"2025-08-23T15:30:00Z"}
-
-event: news
-id: 1692123456790
-data: {"symbol":"AAPL","score":0.7,"provider":"reuters","ts_utc":"2025-08-23T15:30:01Z"}
-```
-
-### 3) SSE Client Implementation (25 min)
-
-**New internal/transport/sse.go:**
+**Core Interface:**
 ```go
-type SSEClient struct {
-    url           string
-    eventChan     chan Event
-    reconnectFunc func() error
-    healthCheck   func() bool
+type QuotesAdapter interface {
+    GetQuote(symbol string) (*Quote, error)
+    GetQuotes(symbols []string) (map[string]*Quote, error)
+    HealthCheck() error
+    Close() error
 }
 
-func (c *SSEClient) Connect() error
-func (c *SSEClient) Subscribe() <-chan Event
-func (c *SSEClient) Reconnect() error
-func (c *SSEClient) Close() error
+type Quote struct {
+    Symbol    string    `json:"symbol"`
+    Bid       float64   `json:"bid"`
+    Ask       float64   `json:"ask"`  
+    Last      float64   `json:"last"`
+    Volume    int64     `json:"volume"`
+    Timestamp time.Time `json:"timestamp"`
+    Source    string    `json:"source"`
+}
 ```
 
-**Connection Management:**
-- Exponential backoff: 1s → 2s → 4s → 8s → 16s max
-- Health checks every 30s with ping/pong or heartbeat events
-- Graceful shutdown and cleanup on errors
+**Implementations:**
+- `SimQuotesAdapter` (existing sim behavior)
+- `AlphaVantageAdapter` (real market data)
+- `MockQuotesAdapter` (for deterministic testing)
 
-### 4) Integration with Decision Engine (15 min)
+### 3) Alpha Vantage Integration (25 min)
 
-**Update cmd/decision/main.go:**
-- Add `-streaming` flag to enable SSE mode vs HTTP polling
-- Wire streaming client into existing event processing loop
-- Maintain same event handling logic, just different transport
-- Add streaming metrics to observability endpoint
+**API Integration:**
+- Real-time quote endpoint: `GLOBAL_QUOTE` function
+- Batch quotes: Multiple symbol support
+- Rate limiting: 5 calls/minute free tier
+- Error handling: API errors, network timeouts, invalid symbols
 
-**Event Processing:**
+**Key Features:**
 ```go
-if *streaming {
-    client := transport.NewSSEClient(wireURL + "/stream")
-    eventChan := client.Subscribe()
-    for event := range eventChan {
-        processWireEvent(event) // existing logic unchanged
+type AlphaVantageAdapter struct {
+    apiKey     string
+    httpClient *http.Client
+    rateLimiter *rate.Limiter
+    cache      map[string]*CachedQuote
+}
+
+type CachedQuote struct {
+    Quote     *Quote
+    FetchedAt time.Time
+    TTL       time.Duration
+}
+```
+
+**Market Hours Logic:**
+- Check if market is open (9:30 AM - 4:00 PM ET, weekdays)
+- Handle pre-market (4:00-9:30 AM) and after-hours (4:00-8:00 PM) sessions
+- Use cached quotes when market closed
+- Respect provider rate limits with exponential backoff
+
+### 4) Configuration & Factory Pattern (15 min)
+
+**Enhanced config/config.yaml:**
+```yaml
+adapters:
+  QUOTES: "sim"  # sim | alphavantage | polygon | mock
+
+quote_providers:
+  alphavantage:
+    api_key_env: "ALPHA_VANTAGE_API_KEY"
+    rate_limit_per_minute: 5
+    cache_ttl_seconds: 60
+    timeout_seconds: 10
+  
+  polygon:
+    api_key_env: "POLYGON_API_KEY" 
+    rate_limit_per_minute: 100
+    cache_ttl_seconds: 5
+    timeout_seconds: 5
+```
+
+**Factory Pattern:**
+```go
+func NewQuotesAdapter(config Config) (QuotesAdapter, error) {
+    switch config.Adapters.Quotes {
+    case "sim":
+        return NewSimQuotesAdapter(), nil
+    case "alphavantage":
+        return NewAlphaVantageAdapter(config.QuoteProviders.AlphaVantage)
+    case "mock":
+        return NewMockQuotesAdapter(fixtures), nil
+    default:
+        return nil, fmt.Errorf("unknown quotes adapter: %s", config.Adapters.Quotes)
     }
 }
 ```
 
-### 5) Testing & Validation (15 min)
+### 5) Integration with Decision Engine (10 min)
 
-**Enhanced scripts/run-tests.sh:**
-- Update wire_mode test to use streaming by default
-- Add fallback test for HTTP polling compatibility
-- Test reconnection scenarios with stub server restart
-- Validate event ordering and cursor behavior
+**Update cmd/decision/main.go:**
+- Replace direct fixture loading with adapter pattern
+- Add quote adapter initialization with proper error handling
+- Maintain existing decision flow with enhanced quote data
+- Add quote freshness validation (reject stale quotes)
 
-**Test Scenarios:**
-- Normal streaming operation
-- Network interruption and reconnection
-- Server restart during streaming
-- Mixed HTTP/SSE compatibility
-
-## Success Metrics
-
-### Technical Validation
-- [ ] SSE connection established and events streaming
-- [ ] Automatic reconnection after network/server failures
-- [ ] Event ordering preserved across reconnections
-- [ ] Latency improvement: <100ms vs previous polling intervals
-- [ ] All existing wire_mode tests pass with streaming
-
-### Operational Readiness
-- [ ] Connection state visible in metrics endpoint
-- [ ] Reconnection attempts and success rates tracked
-- [ ] Message throughput and latency monitoring
-- [ ] Graceful degradation to HTTP polling working
-
-### Code Quality
-- [ ] SSE client properly abstracts transport layer
-- [ ] Existing decision engine code unchanged
-- [ ] Clean configuration switches between modes
-- [ ] Error handling and logging comprehensive
-
-## Risk Mitigation
-
-### Technical Risks
-- **SSE browser compatibility**: Use standard EventSource API, polyfills available
-- **Connection drops**: Implement robust reconnection with cursor resume
-- **Memory leaks**: Proper goroutine cleanup and connection management
-- **Event ordering**: Maintain sequence numbers and cursor-based replay
-
-### Operational Risks
-- **Wire stub stability**: Keep HTTP fallback for reliability
-- **Debugging complexity**: Enhance logging for connection lifecycle
-- **Performance regression**: Monitor latency and throughput vs polling
-
-## Implementation Notes
-
-### Configuration Updates
-```yaml
-wire:
-  enabled: true
-  url: "ws://localhost:8091"  # or http:// for polling
-  transport: "sse"            # or "http" for polling
-  reconnect:
-    initial_delay_ms: 1000
-    max_delay_ms: 16000
-    max_attempts: -1          # infinite
-  health_check_interval_s: 30
-```
-
-### Metrics Extensions
-```json
-{
-  "wire_transport": "sse",
-  "connection_state": "connected",
-  "reconnect_attempts": 3,
-  "last_reconnect": "2025-08-23T15:30:00Z",
-  "messages_received": 1247,
-  "average_latency_ms": 45
+**Quote Validation:**
+```go
+func validateQuote(quote *Quote) error {
+    if quote.Bid <= 0 || quote.Ask <= 0 {
+        return fmt.Errorf("invalid quote prices: bid=%.2f ask=%.2f", quote.Bid, quote.Ask)
+    }
+    if quote.Ask <= quote.Bid {
+        return fmt.Errorf("invalid spread: ask(%.2f) <= bid(%.2f)", quote.Ask, quote.Bid)
+    }
+    if time.Since(quote.Timestamp) > 5*time.Minute {
+        return fmt.Errorf("stale quote: %v old", time.Since(quote.Timestamp))
+    }
+    return nil
 }
 ```
 
+### 6) Testing & Metrics (10 min)
+
+**Enhanced Testing:**
+- Mock adapter for deterministic tests
+- Real adapter integration test (requires API key)
+- Quote validation test cases
+- Market hours logic testing
+
+**New Metrics:**
+```go
+observ.IncCounter("quotes_fetched_total", map[string]string{
+    "provider": "alphavantage",
+    "symbol": symbol,
+})
+observ.Observe("quote_fetch_latency_ms", latency, map[string]string{
+    "provider": "alphavantage",
+})
+observ.IncCounter("quote_errors_total", map[string]string{
+    "provider": "alphavantage", 
+    "error_type": "rate_limit",
+})
+```
+
+**Test Cases:**
+- Valid quote fetching and validation
+- Rate limit handling and backoff
+- Market hours and cache behavior
+- Network error resilience
+- Invalid symbol handling
+
+## Success Metrics
+
+- **Quote Integration**: Real quotes successfully fetched from Alpha Vantage API
+- **Performance**: Quote fetch latency <500ms p95, cache hit rate >80%  
+- **Reliability**: <1% quote fetch error rate during market hours
+- **Testing**: All existing tests pass, new adapter tests achieve >90% coverage
+- **Safety**: Paper trading mode maintained, no real money at risk
+
+## Dependencies
+
+- **API Access**: Alpha Vantage free API key (5 calls/minute limit)
+- **Network**: Reliable internet connection for API calls
+- **Configuration**: Environment variable support for API keys
+- **Testing**: Mock server capability for deterministic testing
+
+## Risk Mitigation
+
+- **Rate Limits**: Implement proper rate limiting and caching
+- **API Failures**: Graceful degradation with cached/stale quotes
+- **Cost Control**: Start with free tier, monitor usage carefully
+- **Safety Gates**: All existing gates remain active, paper mode enforced
+- **Rollback Plan**: Easy config switch back to sim adapter
+
+## Evidence Required
+
+- Real quotes displaying in decision logs with provider attribution
+- Quote fetch metrics showing <500ms latency and >95% success rate
+- All integration tests passing with both sim and real adapters
+- Market hours logic working correctly (cache during closed hours)
+- Error handling demonstrated (network failures, invalid symbols, rate limits)
+
 ## Next Session Preview
 
-**Session 12: Real Adapter Integrations**
-- Replace mock providers with real market data APIs
-- Start with quotes provider (Alpha Vantage, IEX, etc.)
-- Implement API key management and rate limiting
-- Maintain paper trading safety throughout
-
-## Dependencies & Prerequisites
-
-- Session 10 risk controls must be fully functional
-- Wire stub HTTP endpoints remain available for fallback
-- Existing fixture-based testing framework intact
-- Metrics and observability infrastructure operational
-
----
-
-**Estimated Duration**: 90 minutes
-**Risk Level**: Medium (transport changes, connection management)
-**Reversibility**: High (HTTP fallback maintained, feature flags)
-**Evidence Required**: Streaming latency <100ms, reconnection working, all tests pass
+Session 13 will focus on **Drawdown Monitoring and Circuit Breakers**, implementing real-time portfolio drawdown tracking with automatic trading halts to protect against significant losses.

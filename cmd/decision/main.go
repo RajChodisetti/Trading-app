@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
@@ -397,6 +396,23 @@ func mustRead(path string, v any) {
 	}
 }
 
+// waitForHealth performs a simple HTTP health check
+func waitForHealth(url string) error {
+	client := &http.Client{Timeout: 5 * time.Second}
+	for i := 0; i < 5; i++ {
+		resp, err := client.Get(url)
+		if err == nil && resp.StatusCode == 200 {
+			resp.Body.Close()
+			return nil
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("health check failed after 5 attempts")
+}
+
 func main() {
 	var cfgPath string
 	var earningsPath string
@@ -542,102 +558,95 @@ func main() {
 	var eventsProcessed int
 	
 	if cfg.Wire.Enabled {
-		// Wire mode: streaming or polling transport
+		// Wire mode: use configured transport (SSE or HTTP)
+		log.Printf("Wire mode enabled with transport: %s", cfg.Wire.Transport)
+		
+		// Create transport client
 		transportConfig := transport.Config{
-			BaseURL:                     cfg.Wire.BaseURL,
-			Transport:                   cfg.Wire.Transport,
-			Timeout:                     time.Duration(cfg.Wire.TimeoutSeconds) * time.Second,
-			MaxEvents:                   cfg.Wire.MaxEvents,
-			MaxDuration:                 time.Duration(cfg.Wire.MaxDurationSeconds) * time.Second,
-			HeartbeatSeconds:            cfg.Wire.HeartbeatSeconds,
-			MaxChannelBuffer:            cfg.Wire.MaxChannelBuffer,
-			FallbackAfterFailures:       cfg.Wire.FallbackToHttpAfterFailures,
+			BaseURL: cfg.Wire.BaseURL,
+			Transport: cfg.Wire.Transport,
+			MaxChannelBuffer: cfg.Wire.MaxChannelBuffer,
+			HeartbeatSeconds: cfg.Wire.HeartbeatSeconds,
+			FallbackAfterFailures: cfg.Wire.FallbackToHttpAfterFailures,
 			Reconnect: transport.ReconnectConfig{
 				InitialDelayMs: cfg.Wire.Reconnect.InitialDelayMs,
-				MaxDelayMs:     cfg.Wire.Reconnect.MaxDelayMs,
-				MaxAttempts:    cfg.Wire.Reconnect.MaxAttempts,
-				JitterMs:       cfg.Wire.Reconnect.JitterMs,
+				MaxDelayMs: cfg.Wire.Reconnect.MaxDelayMs,
+				MaxAttempts: cfg.Wire.Reconnect.MaxAttempts,
+				JitterMs: cfg.Wire.Reconnect.JitterMs,
 			},
 		}
 		
-		// Apply command line overrides for bounded test runs
-		if maxEvents > 0 {
-			transportConfig.MaxEvents = maxEvents
-		}
-		if durationSeconds > 0 {
-			transportConfig.MaxDuration = time.Duration(durationSeconds) * time.Second
+		var client transport.Client
+		var err error
+		
+		if cfg.Wire.Transport == "sse" {
+			client, err = transport.NewSSEClient(transportConfig)
+		} else {
+			client, err = transport.NewHTTPClient(transportConfig)
 		}
 		
-		wireClient, err := transport.NewClient(transportConfig)
 		if err != nil {
-			log.Fatalf("failed to create wire client: %v", err)
+			log.Fatalf("create transport client: %v", err)
 		}
-		defer wireClient.Close()
 		
 		observ.Log("wire_startup", map[string]any{
-			"base_url":   cfg.Wire.BaseURL,
-			"transport":  cfg.Wire.Transport,
-			"max_events": transportConfig.MaxEvents,
-			"max_duration_sec": transportConfig.MaxDuration.Seconds(),
+			"base_url": cfg.Wire.BaseURL,
+			"transport": cfg.Wire.Transport,
+			"max_channel_buffer": cfg.Wire.MaxChannelBuffer,
 		})
 		
-		// Wait for wire server health (fallback to basic HTTP check)
-		if err := waitForWireHealth(cfg.Wire.BaseURL); err != nil {
-			log.Fatalf("wire health check failed: %v", err)
+		ctx := context.Background()
+		if durationSeconds > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(durationSeconds)*time.Second)
+			defer cancel()
 		}
 		
-		// Poll all events from wire server
+		// Start the client and get event channel
+		eventChan, err := client.Start(ctx)
+		if err != nil {
+			log.Fatalf("start transport client: %v", err)
+		}
+		defer client.Close()
+		
+		// Consume events from transport channel
 		allEvents := []WireEvent{}
 		startTime := time.Now()
-		maxDuration := time.Duration(durationSeconds) * time.Second
 		
 		for {
-			pollStart := time.Now()
-			events, err := wireClient.Poll()
-			pollLatency := time.Since(pollStart)
-			
-			if err != nil {
-				log.Printf("wire poll error: %v", err)
-				observ.IncCounter("wire_poll_errors_total", nil)
-				// Exponential backoff
-				backoff := time.Duration(cfg.Wire.BackoffBaseMs) * time.Millisecond
-				if backoff > time.Duration(cfg.Wire.BackoffMaxMs) * time.Millisecond {
-					backoff = time.Duration(cfg.Wire.BackoffMaxMs) * time.Millisecond
+			select {
+			case envelope, ok := <-eventChan:
+				if !ok {
+					// Channel closed, we're done
+					goto done
 				}
-				time.Sleep(backoff + time.Duration(rand.Intn(100)) * time.Millisecond) // jitter
-				continue
+				
+				// Convert EventEnvelope to WireEvent
+				wireEvent := WireEvent{
+					Type: envelope.Type,
+					ID: envelope.ID,
+					Payload: envelope.Payload,
+				}
+				
+				allEvents = append(allEvents, wireEvent)
+				eventsProcessed++
+				
+				log.Printf("Received %s event %s, total: %d", envelope.Type, envelope.ID, eventsProcessed)
+				
+				// Stop conditions for CI
+				if maxEvents > 0 && eventsProcessed >= maxEvents {
+					log.Printf("Reached max events limit: %d", maxEvents)
+					goto done
+				}
+				
+			case <-ctx.Done():
+				log.Printf("Reached duration limit or context cancelled")
+				goto done
 			}
-			
-			observ.IncCounter("wire_polls_total", nil)
-			observ.Observe("wire_poll_latency_ms", float64(pollLatency.Nanoseconds())/1e6, nil)
-			
-			if len(events) == 0 {
-				// No more events, we're done
-				break
-			}
-			
-			allEvents = append(allEvents, events...)
-			eventsProcessed += len(events)
-			observ.IncCounter("wire_events_ingested_total", map[string]string{"events": strconv.Itoa(len(events))})
-			
-			log.Printf("Polled %d events, cursor advanced, total: %d", len(events), eventsProcessed)
-			
-			// Stop conditions for CI
-			if maxEvents > 0 && eventsProcessed >= maxEvents {
-				log.Printf("Reached max events limit: %d", maxEvents)
-				break
-			}
-			if durationSeconds > 0 && time.Since(startTime) >= maxDuration {
-				log.Printf("Reached duration limit: %ds", durationSeconds)
-				break
-			}
-			
-			// Add small delay to avoid hammering
-			time.Sleep(time.Duration(cfg.Wire.PollIntervalMs) * time.Millisecond)
 		}
 		
+		done:
 		// Process all wire events into internal structures
-		var err error
 		hf, nf, tf, ef, err = processWireEvents(allEvents)
 		if err != nil {
 			log.Fatalf("process wire events: %v", err)
