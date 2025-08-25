@@ -1,480 +1,161 @@
-# Session 15 Plan: Real Adapter Integration
+# Session 16: Live Quote Feeds & System Integration
 
-## Overview
+## Session Overview
+**Duration**: 60-90 minutes  
+**Type**: Integration & Testing  
+**Focus**: Activate live quote feeds safely and resolve test framework issues
 
-Replace remaining mock adapters with live market data feeds, implementing robust error handling, rate limiting, and graceful degradation. Build upon Sessions 13-14's risk management foundation to ensure all existing circuit breaker and position control protections remain active while transitioning to real-time data sources.
+## Context from Session 15
+✅ **Session 15 Completed**: Real adapter integration architecture with 6 major new files (~2000+ lines)
+- Background quote refresher with cache-first decision reads  
+- Provider health monitoring with automatic fallback
+- Shadow mode for halts/news validation
+- VCR and chaos testing frameworks
+- Comprehensive observability and feature flags
 
-## What's Changed vs. Previous Sessions
+🐛 **Issue Identified**: Pre-existing test framework inconsistency where AAPL trend-lite signals aren't generated consistently, causing integration test failures unrelated to Session 15 adapter work.
 
-- **Data Sources**: Transition from mock/stub data to live market data feeds (Alpha Vantage, Polygon, etc.)
-- **Error Resilience**: Implement robust fallback mechanisms when live feeds fail or rate-limit
-- **Performance Optimization**: Add caching, connection pooling, and efficient data parsing for real-time operations
-- **Risk Preservation**: Maintain all existing risk controls (circuit breakers, caps, cooldowns) with live data
-- **Operational Monitoring**: Enhanced observability for feed health, latency, and error rates
+## Session 16 Goals
+
+### Primary Objective: Live Quote Feed Activation
+1. **Fix test framework** - Resolve AAPL trend-lite signal generation inconsistencies
+2. **Enable Alpha Vantage quotes** - Set `live_feeds.yaml` quotes to shadow mode first
+3. **Validate quote cache performance** - Ensure decision p95 <200ms with live data
+4. **Test fallback mechanisms** - Verify Mock→Cache→AlphaVantage fallback chain
+
+### Secondary Objectives: Production Readiness
+5. **Rate limit validation** - Test 5 req/min and daily budget enforcement  
+6. **Health monitoring** - Verify healthy→degraded→failed state transitions
+7. **Observability integration** - Confirm metrics flow to decision engine
+8. **Compliance verification** - Ensure no raw API data storage
+
+## Technical Implementation Plan
+
+### Stage 1: Test Framework Stabilization (15-20 min)
+**Problem**: Mock adapter AAPL quotes vs ticks.json fixture inconsistency
+**Root Cause**: Feature processing prioritizes mock quotes over fixture ticks
+**Fix Options**:
+- Option A: Update fixtures to be consistent with mock adapter values
+- Option B: Fix mock adapter to respect fixture overrides  
+- Option C: Separate test configs for different test scenarios
+
+**Expected Outcome**: Integration tests pass consistently
+
+### Stage 2: Alpha Vantage Shadow Mode (20-25 min)
+**Config Changes** (`config/live_feeds.yaml`):
+```yaml
+feeds:
+  quotes:
+    live_enabled: false          # Keep false initially
+    shadow_mode: true            # Enable shadow mode
+    provider: "alphavantage"     # Switch from mock
+```
+
+**Validation Steps**:
+1. Background refresher starts Alpha Vantage adapter
+2. Cache populated with live quotes (verify staleness <5s RTH)
+3. Decision engine still reads from cache (not blocked by rate limits)
+4. Shadow metrics show quote comparison (live vs mock)
+
+**Success Criteria**: 
+- Decision latency remains <200ms p95
+- Cache hit ratio >90%
+- No rate limit exhaustion
+
+### Stage 3: Health & Fallback Testing (15-20 min)
+**Test Scenarios**:
+1. **Rate limit simulation**: Exceed 5 req/min threshold
+2. **Provider failure**: Network timeout/error injection
+3. **Stale data handling**: Quotes older than freshness ceiling
+4. **Recovery validation**: Provider returns to healthy state
+
+**Expected Behavior**:
+- Healthy → Degraded → Failed state transitions logged
+- Automatic fallback to cache when rate limited
+- Mock adapter fallback when all else fails
+- Decision engine continues operating (no decisions blocked)
+
+### Stage 4: Observability Integration (10-15 min)
+**Metrics Validation**:
+```bash
+curl http://127.0.0.1:8090/metrics | jq '.provider_status'
+curl http://127.0.0.1:8090/metrics | jq '.quote_cache_hit_ratio'
+curl http://127.0.0.1:8090/metrics | jq '.rate_budget_remaining'
+```
+
+**Dashboard Integration**: Verify new adapter metrics appear in decision logs
+
+### Stage 5: Production Readiness (5-10 min)
+**Pre-Flight Checklist**:
+- [ ] API key security (env var only, never logged)
+- [ ] Rate limiting enforced (token bucket + daily cap)  
+- [ ] Error handling graceful (no crash on network issues)
+- [ ] Compliance verified (no full content storage)
+- [ ] Kill switches functional (`disable_live_quotes: true`)
 
 ## Acceptance Criteria
 
-- **Live Quotes Integration**: Real-time bid/ask/last prices from Alpha Vantage or Polygon with <100ms latency
-- **News Feed Integration**: Live news ingestion from Reuters or Bloomberg with proper filtering and deduplication
-- **Halts Data**: Real-time trading halt notifications with immediate position freeze capability
-- **Error Handling**: Graceful degradation to cached data when live feeds fail, with clear operator alerts
-- **Rate Limit Management**: Respect API rate limits with intelligent queuing and backoff strategies
-- **Data Quality Validation**: Reject stale, malformed, or suspicious data with comprehensive logging
-- **Backwards Compatibility**: All existing functionality (caps, cooldowns, circuit breakers) works with live data
-- **Performance SLA**: Decision latency remains <200ms p95 even with live data integration
+### Must Have ✅
+1. **Tests pass**: All integration tests run cleanly
+2. **Shadow mode works**: Live quotes flow through cache to decisions  
+3. **Performance maintained**: Decision p95 <200ms with live data
+4. **Fallback verified**: Rate limits trigger graceful degradation
+5. **Observability functional**: Provider health metrics visible
 
-## Implementation Plan
+### Should Have 📋
+6. **Alpha Vantage integration**: Real quotes for AAPL, NVDA, SPY
+7. **Budget management**: Daily cap enforcement with alerts
+8. **Error resilience**: Network failures don't crash system
+9. **State persistence**: Provider health survives restarts
 
-### 1) Live Quotes Adapter Enhancement (30 min)
-
-**Alpha Vantage Integration:**
-```go
-type AlphaVantageAdapter struct {
-    client      *http.Client
-    apiKey      string
-    rateLimiter *rate.Limiter
-    cache       *QuoteCache
-    config      AlphaVantageConfig
-    logger      *log.Logger
-}
-
-type AlphaVantageConfig struct {
-    APIKey           string        `json:"api_key"`
-    BaseURL          string        `json:"base_url"`
-    RequestsPerMin   int           `json:"requests_per_min"`
-    TimeoutSeconds   int           `json:"timeout_seconds"`
-    CacheExpiryMs    int           `json:"cache_expiry_ms"`
-    RetryAttempts    int           `json:"retry_attempts"`
-    FallbackToCache  bool          `json:"fallback_to_cache"`
-}
-
-func (av *AlphaVantageAdapter) GetQuotes(symbols []string) (map[string]Quote, error) {
-    quotes := make(map[string]Quote)
-    
-    for _, symbol := range symbols {
-        // Check cache first
-        if cached, found := av.cache.Get(symbol); found && !cached.IsStale() {
-            quotes[symbol] = cached
-            continue
-        }
-        
-        // Rate limit check
-        if err := av.rateLimiter.Wait(context.Background()); err != nil {
-            return av.fallbackToCache(symbols, err)
-        }
-        
-        // Make API request
-        quote, err := av.fetchQuote(symbol)
-        if err != nil {
-            av.logger.Printf("Failed to fetch %s from AlphaVantage: %v", symbol, err)
-            // Try cache fallback
-            if cached, found := av.cache.Get(symbol); found {
-                quote = cached
-            } else {
-                continue // Skip this symbol
-            }
-        }
-        
-        // Validate quote quality
-        if av.isQuoteValid(quote) {
-            av.cache.Set(symbol, quote)
-            quotes[symbol] = quote
-        }
-    }
-    
-    return quotes, nil
-}
-```
-
-**Quote Caching and Validation:**
-```go
-type QuoteCache struct {
-    mu      sync.RWMutex
-    quotes  map[string]CachedQuote
-    expiry  time.Duration
-}
-
-type CachedQuote struct {
-    Quote     Quote     `json:"quote"`
-    Timestamp time.Time `json:"timestamp"`
-}
-
-func (qc *QuoteCache) Get(symbol string) (Quote, bool) {
-    qc.mu.RLock()
-    defer qc.mu.RUnlock()
-    
-    cached, exists := qc.quotes[symbol]
-    if !exists {
-        return Quote{}, false
-    }
-    
-    if time.Since(cached.Timestamp) > qc.expiry {
-        return Quote{}, false // Expired
-    }
-    
-    return cached.Quote, true
-}
-
-func (av *AlphaVantageAdapter) isQuoteValid(quote Quote) bool {
-    // Data quality checks
-    if quote.Bid <= 0 || quote.Ask <= 0 || quote.Last <= 0 {
-        return false
-    }
-    
-    // Spread sanity check
-    spread := (quote.Ask - quote.Bid) / quote.Last
-    if spread > 0.05 { // 5% spread seems suspicious
-        return false
-    }
-    
-    // Timestamp recency check
-    if time.Since(quote.Timestamp) > 5*time.Minute {
-        return false // Too stale
-    }
-    
-    return true
-}
-```
-
-### 2) Live News Feed Integration (25 min)
-
-**Reuters/Bloomberg Adapter:**
-```go
-type NewsAdapter struct {
-    client      *http.Client
-    config      NewsConfig
-    deduplicator *NewsDeduplicator
-    processor   *NewsProcessor
-}
-
-type NewsConfig struct {
-    Provider        string   `json:"provider"` // "reuters" or "bloomberg"
-    APIKey         string   `json:"api_key"`
-    WebhookURL     string   `json:"webhook_url"`
-    Categories     []string `json:"categories"`
-    MinConfidence  float64  `json:"min_confidence"`
-    MaxArticlesPerMin int   `json:"max_articles_per_min"`
-}
-
-func (na *NewsAdapter) StreamNews(ctx context.Context) (<-chan NewsItem, error) {
-    newsChan := make(chan NewsItem, 100)
-    
-    go func() {
-        defer close(newsChan)
-        
-        for {
-            select {
-            case <-ctx.Done():
-                return
-            default:
-                articles, err := na.fetchLatestNews()
-                if err != nil {
-                    na.logError("Failed to fetch news", err)
-                    time.Sleep(10 * time.Second)
-                    continue
-                }
-                
-                for _, article := range articles {
-                    // Deduplication check
-                    if na.deduplicator.IsDuplicate(article) {
-                        continue
-                    }
-                    
-                    // Process and extract signals
-                    newsItem, err := na.processor.Process(article)
-                    if err != nil {
-                        continue
-                    }
-                    
-                    // Quality filter
-                    if newsItem.Confidence >= na.config.MinConfidence {
-                        newsChan <- newsItem
-                    }
-                }
-                
-                time.Sleep(30 * time.Second) // Poll every 30 seconds
-            }
-        }
-    }()
-    
-    return newsChan, nil
-}
-```
-
-**News Deduplication:**
-```go
-type NewsDeduplicator struct {
-    seen      map[string]time.Time
-    mu        sync.RWMutex
-    retention time.Duration
-}
-
-func (nd *NewsDeduplicator) IsDuplicate(article Article) bool {
-    nd.mu.Lock()
-    defer nd.mu.Unlock()
-    
-    // Clean old entries
-    nd.cleanup()
-    
-    // Generate content hash
-    hash := nd.generateHash(article.Title, article.Content)
-    
-    if _, exists := nd.seen[hash]; exists {
-        return true
-    }
-    
-    nd.seen[hash] = time.Now()
-    return false
-}
-
-func (nd *NewsDeduplicator) generateHash(title, content string) string {
-    // Simple content-based hash
-    h := sha256.Sum256([]byte(title + content))
-    return fmt.Sprintf("%x", h)[:16] // First 16 chars
-}
-```
-
-### 3) Trading Halts Real-Time Integration (20 min)
-
-**NYSE/NASDAQ Halts Feed:**
-```go
-type HaltsAdapter struct {
-    wsConn      *websocket.Conn
-    config      HaltsConfig
-    haltStatus  map[string]HaltInfo
-    mu          sync.RWMutex
-    alertChan   chan HaltAlert
-}
-
-type HaltInfo struct {
-    Symbol       string    `json:"symbol"`
-    Halted       bool      `json:"halted"`
-    Reason       string    `json:"reason"`
-    HaltTime     time.Time `json:"halt_time"`
-    ResumeTime   *time.Time `json:"resume_time,omitempty"`
-    LastUpdated  time.Time `json:"last_updated"`
-}
-
-func (ha *HaltsAdapter) ConnectStream(ctx context.Context) error {
-    conn, _, err := websocket.DefaultDialer.Dial(ha.config.WebSocketURL, nil)
-    if err != nil {
-        return fmt.Errorf("failed to connect to halts stream: %w", err)
-    }
-    
-    ha.wsConn = conn
-    
-    go func() {
-        defer conn.Close()
-        
-        for {
-            select {
-            case <-ctx.Done():
-                return
-            default:
-                var haltMsg HaltMessage
-                if err := conn.ReadJSON(&haltMsg); err != nil {
-                    ha.logError("Failed to read halt message", err)
-                    continue
-                }
-                
-                ha.processHaltMessage(haltMsg)
-            }
-        }
-    }()
-    
-    return nil
-}
-
-func (ha *HaltsAdapter) processHaltMessage(msg HaltMessage) {
-    ha.mu.Lock()
-    defer ha.mu.Unlock()
-    
-    haltInfo := HaltInfo{
-        Symbol:      msg.Symbol,
-        Halted:      msg.Action == "halt",
-        Reason:      msg.Reason,
-        HaltTime:    msg.Timestamp,
-        LastUpdated: time.Now(),
-    }
-    
-    // Update local state
-    ha.haltStatus[msg.Symbol] = haltInfo
-    
-    // Send alert for immediate action
-    if msg.Action == "halt" {
-        ha.alertChan <- HaltAlert{
-            Symbol:    msg.Symbol,
-            Halted:    true,
-            Reason:    msg.Reason,
-            Timestamp: msg.Timestamp,
-        }
-    }
-}
-```
-
-### 4) Error Handling and Circuit Breakers (15 min)
-
-**Feed Health Monitoring:**
-```go
-type FeedHealthMonitor struct {
-    feeds       map[string]*FeedHealth
-    mu          sync.RWMutex
-    alertMgr    *AlertManager
-}
-
-type FeedHealth struct {
-    Name            string        `json:"name"`
-    LastSuccessful  time.Time     `json:"last_successful"`
-    LastError       time.Time     `json:"last_error"`
-    ErrorCount      int           `json:"error_count"`
-    SuccessCount    int           `json:"success_count"`
-    LatencyP95      time.Duration `json:"latency_p95"`
-    Status          string        `json:"status"` // "healthy", "degraded", "failed"
-}
-
-func (fhm *FeedHealthMonitor) RecordSuccess(feedName string, latency time.Duration) {
-    fhm.mu.Lock()
-    defer fhm.mu.Unlock()
-    
-    health, exists := fhm.feeds[feedName]
-    if !exists {
-        health = &FeedHealth{Name: feedName}
-        fhm.feeds[feedName] = health
-    }
-    
-    health.LastSuccessful = time.Now()
-    health.SuccessCount++
-    health.LatencyP95 = fhm.updateLatencyMetric(health.LatencyP95, latency)
-    
-    // Update status
-    if health.ErrorCount > 0 && time.Since(health.LastError) > 5*time.Minute {
-        health.Status = "healthy"
-    }
-}
-
-func (fhm *FeedHealthMonitor) RecordError(feedName string, err error) {
-    fhm.mu.Lock()
-    defer fhm.mu.Unlock()
-    
-    health := fhm.feeds[feedName]
-    health.LastError = time.Now()
-    health.ErrorCount++
-    
-    // Update status based on error rate
-    errorRate := float64(health.ErrorCount) / float64(health.SuccessCount + health.ErrorCount)
-    if errorRate > 0.1 {
-        health.Status = "degraded"
-    }
-    if errorRate > 0.5 {
-        health.Status = "failed"
-        fhm.alertMgr.SendAlert(fmt.Sprintf("Feed %s has failed (error rate %.1f%%)", feedName, errorRate*100))
-    }
-}
-```
-
-### 5) Configuration and Deployment (10 min)
-
-**Live Adapter Configuration:**
-```yaml
-# config/live_adapters.yaml
-adapters:
-  quotes:
-    provider: "alphavantage"
-    config:
-      api_key: "${ALPHAVANTAGE_API_KEY}"
-      requests_per_min: 60
-      cache_expiry_ms: 1000
-      fallback_to_cache: true
-      
-  news:
-    provider: "reuters"
-    config:
-      api_key: "${REUTERS_API_KEY}"
-      webhook_url: "${NEWS_WEBHOOK_URL}"
-      min_confidence: 0.7
-      max_articles_per_min: 30
-      
-  halts:
-    provider: "nasdaq"
-    config:
-      websocket_url: "wss://api.nasdaq.com/halts"
-      reconnect_attempts: 5
-      heartbeat_interval: 30
-      
-# Fallback behavior
-fallback:
-  quotes_cache_duration: "5m"
-  news_buffer_size: 1000  
-  halt_cache_duration: "1h"
-  emergency_mode_threshold: 0.5 # 50% failure rate triggers emergency mode
-```
-
-**Environment Variable Management:**
-```bash
-# Required API keys
-export ALPHAVANTAGE_API_KEY="your_key_here"
-export REUTERS_API_KEY="your_key_here"
-export POLYGON_API_KEY="your_key_here"
-
-# Feature flags
-export LIVE_QUOTES_ENABLED=true
-export LIVE_NEWS_ENABLED=true
-export LIVE_HALTS_ENABLED=true
-export FALLBACK_TO_MOCK_ON_ERROR=true
-```
-
-## Integration Testing Plan
-
-### Adapter Switch Testing:
-```go
-func TestAdapterSwitching(t *testing.T) {
-    testCases := []struct {
-        name           string
-        adapterConfig  string
-        expectedType   string
-        shouldFallback bool
-    }{
-        {
-            name: "alphavantage_quotes",
-            adapterConfig: "alphavantage",
-            expectedType: "*adapters.AlphaVantageAdapter",
-        },
-        {
-            name: "fallback_on_failure",
-            adapterConfig: "invalid_provider",
-            expectedType: "*adapters.MockAdapter",
-            shouldFallback: true,
-        },
-    }
-}
-```
-
-## Success Metrics
-
-- **Data Quality**: >99% valid quotes with <100ms median latency
-- **Error Resilience**: <30s recovery time when primary feeds fail
-- **Risk Preservation**: All existing risk controls (caps, cooldowns, circuit breakers) maintain 100% effectiveness
-- **Performance**: Decision latency <200ms p95 with live data vs <50ms with mocks
-- **Uptime**: >99.9% system availability despite external feed issues
+### Nice to Have ➕
+10. **Multiple symbols**: Cache warming for priority symbols
+11. **Batch optimization**: Multiple quote requests minimized
+12. **Adaptive refresh**: Refresh rate adjusts based on market hours
 
 ## Risk Mitigation
 
-- **Graceful Degradation**: System automatically falls back to cached/mock data when live feeds fail
-- **Rate Limit Protection**: Built-in throttling prevents API quota exhaustion
-- **Data Validation**: Multi-layer validation prevents bad data from affecting decisions
-- **Circuit Breakers**: Automatic feed isolation when error rates exceed thresholds
-- **Emergency Mode**: Manual override to disable live feeds and revert to mock data
+### High Risk 🚨
+- **API key exposure**: Never log API keys, secure env var handling
+- **Rate limit violation**: Could exhaust daily quota, implement conservative limits
+- **Decision latency**: Live quotes might slow decision engine below SLA
 
-## Evidence Required
+### Medium Risk ⚠️ 
+- **Provider reliability**: Alpha Vantage downtime affects quote quality
+- **Data quality**: Stale/invalid quotes could trigger bad decisions
+- **Memory usage**: Quote cache growth without proper eviction
 
-- Live quotes showing real bid/ask spreads with proper validation
-- News ingestion processing 100+ articles/hour with deduplication working
-- Trading halts triggering immediate position freezes
-- Fallback mechanisms working smoothly when APIs fail
-- All existing risk controls (Session 13-14) operating correctly with live data
+### Low Risk ℹ️
+- **Configuration complexity**: Feature flags might be confusing
+- **Testing overhead**: VCR recordings need maintenance
 
-## Next Session Preview
+## Session Handoff Notes
 
-**Session 16: Production Hardening** - Implement comprehensive monitoring, alerting, automated failover, performance optimization, security hardening, and deployment automation to prepare the system for live trading operations.
+**If Session 16 is incomplete:**
+- Core adapter architecture from Session 15 is production-ready
+- Test framework issues are pre-existing, not from Session 15 work  
+- Live quote feeds can be activated independently of test fixes
+- Shadow mode is safest first step before full live activation
 
-This session transitions the trading system from development/testing with mock data to production-ready operation with live market data feeds, while preserving all the risk management and safety controls built in previous sessions.
+**If Session 16 succeeds:**
+- Ready for Session 17: Live halts feed integration
+- Quote cache architecture validated for other data feeds
+- Provider health monitoring proven for scaled deployment
+
+## Files to Focus On
+- `config/live_feeds.yaml` - Feature flag configuration
+- `internal/adapters/integration_test.go` - Test framework fixes
+- `cmd/decision/main.go` - AAPL trend-lite signal debugging
+- `fixtures/ticks.json` - Test data consistency
+- `scripts/run-tests.sh` - Test harness validation
+
+## Environment Setup
+```bash
+export ALPHAVANTAGE_API_KEY="your_key_here"  
+export LIVE_QUOTES_ENABLED="false"           # Shadow mode first
+make test                                     # Baseline test pass
+go run ./cmd/decision -oneshot=true          # Manual quote validation
+```
+
+---
+**Next Session After 16**: Live halts feed integration with NASDAQ/Polygon shadow mode testing

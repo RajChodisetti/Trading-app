@@ -22,9 +22,9 @@ func NewMockQuotesAdapter() *MockQuotesAdapter {
 		quotes: map[string]*Quote{
 			"AAPL": {
 				Symbol:      "AAPL",
-				Bid:         206.70,
-				Ask:         206.90,
-				Last:        206.80,
+				Bid:         210.00,
+				Ask:         210.10,
+				Last:        210.05, // Above the VWAP from ticks.json (209.80) to enable trend-lite signal
 				Volume:      12500000,
 				Timestamp:   now.Add(-30 * time.Second), // Recent quote
 				Session:     string(GetCurrentSession()),

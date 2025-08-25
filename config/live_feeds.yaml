@@ -1,0 +1,185 @@
+# Session 15: Live Feed Configuration with Shadow Mode and Feature Flags
+# Stage rollout: Quotes -> Halts -> News
+
+feeds:
+  # Quotes feed configuration (Stage 1: Active)
+  quotes:
+    live_enabled: false                    # Enable live quotes (feature flag)
+    provider: "alphavantage"               # "alphavantage" | "polygon" | "mock"
+    shadow_mode: false                     # Run alongside mock for comparison
+    
+    # Freshness and quality requirements
+    freshness_ceiling_seconds: 5           # Max quote age during RTH
+    freshness_ceiling_ah_seconds: 60       # Max quote age after hours
+    refresh_interval_ms: 800               # Background refresh rate
+    cache_ttl_seconds: 10                  # Local cache TTL
+    
+    # Rate limiting and budget
+    requests_per_minute: 5                 # Alpha Vantage free tier
+    daily_request_cap: 100                 # Conservative daily limit
+    batch_size: 1                          # Alpha Vantage doesn't support batch
+    
+    # Fallback behavior
+    fallback_to_cache: true                # Use cache when rate limited
+    fallback_to_mock: true                 # Use mock when all else fails
+    cache_extend_on_limit: true            # Extend cache TTL when rate limited
+    
+    # Health thresholds
+    degraded_error_rate: 0.01              # 1% error rate = degraded
+    failed_error_rate: 0.10                # 10% error rate = failed
+    recovery_window_minutes: 5             # Time to recover from failure
+    max_consecutive_errors: 5              # Max errors before marking failed
+    
+    # Alpha Vantage specific config
+    alphavantage:
+      api_key: "${ALPHAVANTAGE_API_KEY}"   # From environment
+      base_url: "https://www.alphavantage.co/query"
+      timeout_seconds: 10
+      retry_attempts: 2
+      backoff_base_ms: 1000
+  
+  # Halts feed configuration (Stage 2: Shadow)
+  halts:
+    live_enabled: false                    # Enable live halts (feature flag)
+    shadow_mode: true                      # Run in shadow mode only
+    provider: "mock"                       # "nasdaq" | "polygon" | "mock"
+    
+    # Shadow mode settings
+    parity_check_interval_minutes: 1       # How often to check parity
+    max_parity_mismatches: 10              # Alert threshold
+    shadow_retention_hours: 4              # How long to keep shadow data
+    
+    # Mock provider settings (for current system)
+    mock_halt_probability: 0.01            # 1% chance of random halts for testing
+    mock_halt_duration_minutes: 15         # Average halt duration
+    
+  # News feed configuration (Stage 3: Shadow/Disabled)
+  news:
+    live_enabled: false                    # Enable live news (feature flag)
+    shadow_mode: true                      # Run in shadow mode only
+    provider: "mock"                       # "benzinga" | "finnhub" | "polygon" | "mock"
+    
+    # Processing settings
+    min_confidence: 0.7                    # Minimum confidence threshold
+    max_articles_per_minute: 30            # Rate limiting
+    signal_expiry_hours: 4                 # How long signals remain valid
+    dedupe_window_hours: 24                # Deduplication window
+    
+    # Compliance settings (IMPORTANT)
+    store_content: false                   # NEVER store full article content
+    store_summary: true                    # Store summary if ToS allows
+    retention_days: 30                     # How long to retain metadata
+    allowed_providers: ["benzinga", "finnhub", "polygon"]  # Whitelisted providers
+    
+    # Categories of interest
+    categories: ["earnings", "guidance", "merger", "acquisition", "partnership"]
+
+# Kill switches (runtime overrides)
+kill_switches:
+  disable_live_quotes: false               # Emergency disable quotes
+  disable_live_halts: false                # Emergency disable halts  
+  disable_live_news: false                 # Emergency disable news
+  force_mock_mode: false                   # Force all adapters to mock
+  
+# Observability settings
+observability:
+  # Metrics collection
+  metrics_enabled: true
+  metrics_interval_seconds: 30
+  
+  # Key metrics to track
+  track_metrics:
+    # Provider health
+    - "provider_status"                    # Health status gauge
+    - "provider_operations_total"          # Success/error counters
+    - "provider_latency"                   # Response time histogram
+    
+    # Cache performance  
+    - "quote_cache_hit_ratio"              # Cache efficiency
+    - "quote_freshness_seconds"            # Data freshness
+    - "quote_cache_evictions_total"        # Cache evictions
+    
+    # Rate limiting
+    - "rate_budget_remaining"              # Daily budget remaining
+    - "rate_budget_exhausted_total"        # Budget exhaustion events
+    
+    # Shadow mode
+    - "halts_parity_matches"               # Halt parity successes
+    - "halts_parity_mismatches"            # Halt parity failures
+    - "news_shadow_processed_total"        # News articles processed
+    
+  # Alerting thresholds
+  alerts:
+    quote_freshness_seconds: 10            # Alert if quotes > 10s stale
+    cache_hit_ratio: 0.8                   # Alert if hit ratio < 80%
+    provider_error_rate: 0.05              # Alert if error rate > 5%
+    budget_remaining_pct: 0.1              # Alert if budget < 10%
+    parity_mismatch_rate: 0.05             # Alert if parity mismatches > 5%
+
+# Rollout strategy
+rollout:
+  # Stage 1: Quotes
+  quotes_shadow_duration_hours: 24         # Run quotes in shadow for 24h first
+  quotes_confidence_threshold: 0.99       # 99% cache hit rate to go live
+  
+  # Stage 2: Halts  
+  halts_shadow_duration_hours: 48          # Run halts in shadow for 48h
+  halts_parity_threshold: 0.95             # 95% parity to consider live
+  
+  # Stage 3: News
+  news_shadow_duration_hours: 72           # Run news in shadow for 72h
+  news_licensing_required: true            # Ensure proper licensing before live
+  
+# Environment integration
+environment:
+  # Required environment variables
+  required_env_vars:
+    - "ALPHAVANTAGE_API_KEY"               # Alpha Vantage API key
+    # - "POLYGON_API_KEY"                  # Polygon API key (if using)
+    # - "BENZINGA_API_KEY"                 # Benzinga API key (if using)
+  
+  # Optional environment variables
+  optional_env_vars:
+    LIVE_QUOTES_ENABLED: "false"           # Override quotes live flag
+    LIVE_HALTS_ENABLED: "false"            # Override halts live flag  
+    LIVE_NEWS_ENABLED: "false"             # Override news live flag
+    FORCE_SHADOW_MODE: "false"             # Force all feeds to shadow mode
+    
+  # Feature flag defaults (if env vars not set)
+  defaults:
+    live_quotes_enabled: false
+    live_halts_enabled: false
+    live_news_enabled: false
+    force_shadow_mode: false
+
+# Integration settings
+integration:
+  # Decision engine integration
+  stale_quote_gate: "liquidity"            # Gate to trigger on stale quotes
+  halt_gate: "halt"                        # Gate to trigger on trading halts
+  news_gate: "disabled"                    # News gate disabled until live
+  
+  # Cache integration  
+  cache_warming_symbols: ["AAPL", "NVDA", "TSLA", "SPY", "QQQ"]  # Priority symbols
+  cache_warming_enabled: true              # Pre-warm cache on startup
+  
+  # Adapter factory settings
+  adapter_timeout_seconds: 30              # Adapter initialization timeout
+  adapter_retry_attempts: 3                # Retries on initialization failure
+  
+# Testing and validation
+testing:
+  # VCR (record/replay) settings
+  vcr_enabled: false                       # Enable VCR for testing
+  vcr_record_path: "test/fixtures/vcr"     # Where to store VCR recordings
+  vcr_replay_mode: true                    # Replay recordings in tests
+  
+  # Chaos testing
+  chaos_testing_enabled: false            # Enable chaos testing
+  chaos_error_rate: 0.1                   # 10% error injection rate
+  chaos_timeout_rate: 0.05                # 5% timeout injection rate
+  
+  # Mock settings for CI
+  ci_force_mock: true                      # Force mock adapters in CI
+  mock_quote_latency_ms: 10                # Simulated quote latency
+  mock_halt_frequency_minutes: 60          # Mock halt every hour

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 type registry struct {
@@ -44,6 +45,10 @@ func canonLabels(lbl map[string]string) string {
 }
 
 func IncCounter(name string, labels map[string]string) {
+	IncCounterBy(name, labels, 1.0)
+}
+
+func IncCounterBy(name string, labels map[string]string, value float64) {
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
 	m, ok := reg.counters[name]
@@ -52,7 +57,7 @@ func IncCounter(name string, labels map[string]string) {
 		reg.counters[name] = m
 	}
 	k := canonLabels(labels)
-	m[k]++
+	m[k] += int64(value)
 }
 
 func SetGauge(name string, value float64, labels map[string]string) {
@@ -77,6 +82,21 @@ func Observe(name string, value float64, labels map[string]string) {
 	}
 	k := canonLabels(labels)
 	m[k] = append(m[k], value)
+}
+
+// RecordHistogram records a histogram observation
+func RecordHistogram(name string, value float64, labels map[string]string) {
+	Observe(name, value, labels)
+}
+
+// RecordGauge records a gauge value
+func RecordGauge(name string, value float64, labels map[string]string) {
+	SetGauge(name, value, labels)
+}
+
+// RecordDuration records a duration metric
+func RecordDuration(name string, duration time.Duration, labels map[string]string) {
+	Observe(name+"_ms", float64(duration.Milliseconds()), labels)
 }
 
 // Basic text/JSON dump for quick checks (not Prometheus format on purpose)
