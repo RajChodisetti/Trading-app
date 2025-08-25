@@ -1,51 +1,34 @@
-# Session 16: Live Quote Feeds & System Integration
+# Session 17: Live Quote Feeds - Alpha Vantage Shadow Mode & Production Readiness
 
 ## Session Overview
 **Duration**: 60-90 minutes  
-**Type**: Integration & Testing  
-**Focus**: Activate live quote feeds safely with deterministic testing and promotion gates
+**Type**: Integration & Production Activation  
+**Focus**: Enable Alpha Vantage shadow mode with promotion gates for live quote feed activation
 
-## Context from Session 15
-✅ **Session 15 Completed**: Real adapter integration architecture with 6 major new files (~2000+ lines)
-- Background quote refresher with cache-first decision reads  
-- Provider health monitoring with automatic fallback
-- Shadow mode for halts/news validation
-- VCR and chaos testing frameworks
-- Comprehensive observability and feature flags
+## Context from Session 16
+✅ **Session 16 Stage 1 Completed**: Test framework deterministically fixed
+- Implemented `TEST_MODE=fixtures` environment routing for deterministic testing
+- Fixed critical wire mode bug in nested payload parsing (news sentiment + trend-lite now working)
+- Resolved all integration test failures (after_hours, pr_only, wire_mode)
+- Applied consistent fixture-based testing across all test cases
 
-🐛 **Issue Identified**: Pre-existing test framework inconsistency where AAPL trend-lite signals aren't generated consistently, causing integration test failures unrelated to Session 15 adapter work.
+🎯 **Ready for Stage 2**: Live adapter integration with safety gates and promotion criteria
 
-## Session 16 Goals
+## Session 17 Goals
 
-### Primary Objective: Live Quote Feed Activation with Safety Gates
-1. **Fix test framework deterministically** - Inject test clock, single quote source routing
-2. **Enable Alpha Vantage shadow mode** - With hysteresis and promotion gates  
-3. **Validate quote cache performance** - Ensure decision p95 <200ms, hotpath isolation
-4. **Test fallback mechanisms** - Verify Mock→Cache→AlphaVantage with auto-recovery
+### Primary Objective: Alpha Vantage Shadow Mode Activation
+1. **Enable Alpha Vantage shadow mode** - With hysteresis and promotion gates  
+2. **Validate quote cache performance** - Ensure decision p95 <200ms, hotpath isolation
+3. **Test fallback mechanisms** - Verify Mock→Cache→AlphaVantage with auto-recovery
+4. **Production readiness validation** - Meet 30-60min stability window for promotion gates
 
-### Secondary Objectives: Production Readiness
+### Secondary Objectives: Enhanced Observability
 5. **Rate limit + adaptive cadence** - Budget-aware refresh intervals with priority symbols
 6. **Health monitoring with hysteresis** - Prevent flapping with consecutive-breach rules
 7. **Observability + compliance** - /healthz endpoint, payload scanning, structured logs
-8. **Promotion criteria validation** - 30-60min window of stable metrics before live activation
+8. **Live activation criteria** - Validate promotion gates and enable live mode safely
 
 ## Technical Implementation Plan
-
-### Stage 1: Test Framework Deterministic Fix (15-20 min)
-**Problem**: Mock adapter AAPL quotes vs ticks.json fixture inconsistency + time drift
-**Solution**: Option C + deterministic improvements:
-- **TEST_MODE environment routing**: `fixtures` vs `mock` quote sources per test suite
-- **Inject test clock**: Replace `time.Now()` calls in trend-lite with configurable time
-- **Golden intent validation**: Add one-liner AAPL/NVDA/SPY intent map check after `make test`
-
-**Config Addition**:
-```bash
-# Test routing
-export TEST_MODE=fixtures  # or "mock" 
-export TEST_CLOCK_FREEZE=true
-```
-
-**Expected Outcome**: Integration tests pass consistently with no time/data source drift
 
 ### Stage 2: Alpha Vantage Shadow Mode with Promotion Gates (20-25 min)
 **Config Changes** (`config/live_feeds.yaml`):
@@ -114,7 +97,7 @@ go test -run TestComplianceGuard ./internal/adapters
 - `shadow_mismatch_total{kind="spread|mid|staleness"}` < 2%
 - Health transition events in structured logs
 
-### Stage 5: Production Readiness Validation (5-10 min)
+### Stage 5: Production Readiness & Live Activation (5-10 min)
 **Enhanced Pre-Flight Checklist**:
 - [ ] **Hotpath isolation**: `hotpath_live_calls_total == 0` verified
 - [ ] **Promotion gates met**: 30-60min window of stable metrics documented
@@ -123,16 +106,23 @@ go test -run TestComplianceGuard ./internal/adapters
 - [ ] **Auto-recovery tested**: Failed → Healthy transition in <5min after restoration
 - [ ] **Adaptive cadence**: Budget-aware refresh interval adjustment verified
 
+**Live Activation Process**:
+1. Validate all promotion gates over 30-60min window
+2. Document evidence collection (metrics screenshots)
+3. Update `live_enabled: true` in config
+4. Monitor hotpath isolation and fallback behavior
+5. Verify decision latency remains <200ms
+
 ## Enhanced Acceptance Criteria
 
-### Must Have ✅ (Strengthened)
-1. **Tests deterministic**: Integration tests pass consistently with injected clock + TEST_MODE
+### Must Have ✅ (Production Critical)
+1. **Shadow mode active**: Alpha Vantage running in shadow mode with comparison metrics
 2. **Hotpath isolation**: `hotpath_live_calls_total == 0` throughout session
 3. **Promotion gates met**: ≥30min window of p95 freshness ≤5s, latency ≤200ms, success rate ≥99%
 4. **Fallback chain verified**: Live → Cache → Mock with structured logging
 5. **Compliance validated**: TestComplianceGuard passes (no API keys/payloads in logs)
 
-### Should Have 📋 (Enhanced)
+### Should Have 📋 (Enhanced Safety)
 6. **Shadow mismatch ratio**: <2% of samples across priority symbols
 7. **Auto-recovery validated**: Failed → Healthy in <5min with consecutive-ok rules
 8. **Health hysteresis**: State changes only after K consecutive breaches (no flapping)
@@ -142,8 +132,9 @@ go test -run TestComplianceGuard ./internal/adapters
 10. **Structured health events**: from/to/reason/window_stats in logs
 11. **Symbol prioritization**: Positions > watchlist > rest during budget constraints
 12. **Shadow comparison alerts**: Spread/mid/staleness mismatch detection
+13. **Live mode activation**: If promotion gates met, enable live mode safely
 
-## Risk Mitigation (Enhanced)
+## Risk Mitigation
 
 ### High Risk 🚨 (Tightened)
 - **Latency spikes**: Hotpath isolation ensures decision loop reads only from cache (`cache_miss_total == 0`)
@@ -151,62 +142,59 @@ go test -run TestComplianceGuard ./internal/adapters
 - **Health flapping**: Hysteresis (3 consecutive failures) + K-consecutive recovery rule
 
 ### Medium Risk ⚠️ (New Controls)
-- **Test drift**: Injected clock + single quote source per suite (TEST_MODE routing)
 - **Provider reliability**: Shadow mode + automatic fallback with auto-recovery
 - **Data quality**: Shadow comparison heuristics catch suspicious spread/mid/staleness differences
+- **Live activation premature**: Require 30-60min stability window before live mode
 
 ### Low Risk ℹ️ (Operational)  
-- **Promotion timing**: Clear 30-60min stability gates prevent premature live activation
+- **Promotion timing**: Clear stability gates prevent premature live activation
 - **Configuration complexity**: /healthz JSON endpoint simplifies monitoring vs metrics scraping
 - **Compliance audit**: TestComplianceGuard scans for payload/API key leakage
 
 ## Session Handoff Notes
 
-**If Session 16 is incomplete:**
-- Core adapter architecture from Session 15 is production-ready
-- Test framework issues are pre-existing, not from Session 15 work  
-- Live quote feeds can be activated independently of test fixes
-- Shadow mode is safest first step before full live activation
+**Session 16 Achievements**:
+✅ **Test Framework Deterministic**: Fixed all integration test failures
+✅ **Wire Mode Fixed**: Nested payload parsing for news sentiment + trend-lite working
+✅ **Consistent Testing**: All tests use pure fixture data with TEST_MODE routing
 
-**If Session 16 succeeds:**
-- Ready for Session 17: Live halts feed integration
-- Quote cache architecture validated for other data feeds
+**If Session 17 succeeds:**
+- Ready for Session 18: Live halts feed integration
+- Quote cache architecture validated for other data feeds  
 - Provider health monitoring proven for scaled deployment
+- Live quote feeds activated safely with promotion gates
 
 ## Files to Focus On
-- `config/live_feeds.yaml` - Feature flag configuration
-- `internal/adapters/integration_test.go` - Test framework fixes
-- `cmd/decision/main.go` - AAPL trend-lite signal debugging
-- `fixtures/ticks.json` - Test data consistency
-- `scripts/run-tests.sh` - Test harness validation
+- `config/live_feeds.yaml` - Feature flag configuration (create this file)
+- `internal/adapters/integration_test.go` - Shadow mode and health testing
+- `internal/adapters/quotes.go` - Alpha Vantage integration and caching
+- `cmd/decision/main.go` - Hotpath isolation verification
+- `internal/observability/` - Health endpoint and compliance scanning
 
-## Environment Setup (Enhanced)
+## Environment Setup
 ```bash
 # Required for live integration
 export ALPHAVANTAGE_API_KEY="your_key_here"  
 export LIVE_QUOTES_ENABLED="false"           # Shadow mode first
 
-# Test determinism controls
-export TEST_MODE="fixtures"                  # or "mock" for different suites
-export TEST_CLOCK_FREEZE="true"             # Inject deterministic time
-
 # Validation pipeline
-make test                                     # Baseline test pass with golden intent check
+make test                                     # Should pass consistently now
 go test -run TestComplianceGuard ./internal/adapters  # API key/payload scanning
 go run ./cmd/decision -oneshot=true          # Manual quote validation
 curl http://127.0.0.1:8090/healthz | jq     # Health endpoint validation
 ```
 
-## Actionable TODO Items (Ready for Session 16)
-- [ ] Inject test clock into trend-lite and VWAP computations
-- [ ] Add TEST_MODE routing for quotes (fixtures vs mock)
+## Actionable TODO Items (Ready for Session 17)
+- [ ] Create live_feeds.yaml config file with shadow mode settings
 - [ ] Implement health hysteresis & consecutive-breach rules  
 - [ ] Add /healthz JSON endpoint with provider status & freshness
 - [ ] Add `hotpath_live_calls_total` guard metric & CI assertion
 - [ ] Write TestComplianceGuard to scan logs for payload/API keys
 - [ ] Document promotion criteria checklist (append to session doc)
+- [ ] Enable Alpha Vantage shadow mode and collect evidence
+- [ ] Validate promotion gates over 30-60min window
 
-## Ready-to-Use Config (Paste into live_feeds.yaml)
+## Ready-to-Use Config (Create config/live_feeds.yaml)
 ```yaml
 feeds:
   quotes:
@@ -224,4 +212,4 @@ feeds:
 ```
 
 ---
-**Next Session After 16**: Live halts feed integration with NASDAQ/Polygon shadow mode + same promotion gate methodology
+**Next Session After 17**: Live halts feed integration with NASDAQ/Polygon shadow mode + same promotion gate methodology

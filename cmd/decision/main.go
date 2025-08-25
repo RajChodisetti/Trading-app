@@ -33,12 +33,18 @@ type haltsFile struct {
 
 type newsFile struct {
 	News []struct {
-		ID          string   `json:"id"`
-		Tickers     []string `json:"tickers"`
-		IsPR        bool     `json:"is_press_release"`
-		Provider    string   `json:"provider"`
-		Hash        string   `json:"headline_hash"`
-		PublishedAt string   `json:"published_at_utc"`
+		ID             string   `json:"id"`
+		Provider       string   `json:"provider"`
+		PublishedAt    string   `json:"published_at_utc"`
+		Headline       string   `json:"headline"`
+		Body           string   `json:"body"`
+		URLs           []string `json:"urls"`
+		Tickers        []string `json:"tickers"`
+		IsPR           bool     `json:"is_press_release"`
+		IsCorrection   bool     `json:"is_correction"`
+		SupersedesID   *string  `json:"supersedes_id"`
+		SourceWeight   float64  `json:"source_weight"`
+		Hash           string   `json:"headline_hash"`
 	} `json:"news"`
 }
 
@@ -171,6 +177,21 @@ func processWireEvents(events []WireEvent) (haltsFile, newsFile, ticksFile, earn
 	for _, event := range events {
 		switch event.Type {
 		case "news":
+			// Extract nested payload from wire event structure
+			payloadBytes, err := json.Marshal(event.Payload)
+			if err != nil {
+				log.Printf("Failed to marshal news payload %s: %v", event.ID, err)
+				continue
+			}
+			
+			var wireEventStruct struct {
+				Payload json.RawMessage `json:"payload"`
+			}
+			if err := json.Unmarshal(payloadBytes, &wireEventStruct); err != nil {
+				log.Printf("Failed to parse wire event structure %s: %v", event.ID, err)
+				continue
+			}
+			
 			var newsItem struct {
 				ID             string   `json:"id"`
 				Provider       string   `json:"provider"`
@@ -185,42 +206,70 @@ func processWireEvents(events []WireEvent) (haltsFile, newsFile, ticksFile, earn
 				SourceWeight   float64  `json:"source_weight"`
 				HeadlineHash   string   `json:"headline_hash"`
 			}
-			if err := json.Unmarshal(event.Payload, &newsItem); err != nil {
-				log.Printf("Failed to parse news event %s: %v", event.ID, err)
+			if err := json.Unmarshal(wireEventStruct.Payload, &newsItem); err != nil {
+				log.Printf("Failed to parse news data %s: %v", event.ID, err)
 				continue
 			}
 			nf.News = append(nf.News, struct {
-				ID          string   `json:"id"`
-				Tickers     []string `json:"tickers"`
-				IsPR        bool     `json:"is_press_release"`
-				Provider    string   `json:"provider"`
-				Hash        string   `json:"headline_hash"`
-				PublishedAt string   `json:"published_at_utc"`
+				ID             string   `json:"id"`
+				Provider       string   `json:"provider"`
+				PublishedAt    string   `json:"published_at_utc"`
+				Headline       string   `json:"headline"`
+				Body           string   `json:"body"`
+				URLs           []string `json:"urls"`
+				Tickers        []string `json:"tickers"`
+				IsPR           bool     `json:"is_press_release"`
+				IsCorrection   bool     `json:"is_correction"`
+				SupersedesID   *string  `json:"supersedes_id"`
+				SourceWeight   float64  `json:"source_weight"`
+				Hash           string   `json:"headline_hash"`
 			}{
-				ID:          newsItem.ID,
-				Tickers:     newsItem.Tickers,
-				IsPR:        newsItem.IsPressRelease,
-				Provider:    newsItem.Provider,
-				Hash:        newsItem.HeadlineHash,
-				PublishedAt: newsItem.PublishedAtUTC,
+				ID:           newsItem.ID,
+				Provider:     newsItem.Provider,
+				PublishedAt:  newsItem.PublishedAtUTC,
+				Headline:     newsItem.Headline,
+				Body:         newsItem.Body,
+				URLs:         newsItem.URLs,
+				Tickers:      newsItem.Tickers,
+				IsPR:         newsItem.IsPressRelease,
+				IsCorrection: newsItem.IsCorrection,
+				SupersedesID: newsItem.SupersedesID,
+				SourceWeight: newsItem.SourceWeight,
+				Hash:         newsItem.HeadlineHash,
 			})
 			
 		case "tick":
+			// The event.Payload contains the full wire event structure, we need the nested "payload" field
+			payloadBytes, err := json.Marshal(event.Payload)
+			if err != nil {
+				log.Printf("Failed to marshal tick payload %s: %v", event.ID, err)
+				continue
+			}
+			
+			// First unmarshal to get the wire event structure
+			var wireEventStruct struct {
+				Payload json.RawMessage `json:"payload"`
+			}
+			if err := json.Unmarshal(payloadBytes, &wireEventStruct); err != nil {
+				log.Printf("Failed to parse wire event structure %s: %v", event.ID, err)
+				continue
+			}
+			
+			// Now unmarshal the nested payload to our tick struct
 			var tick struct {
 				Symbol     string  `json:"symbol"`
 				Last       float64 `json:"last"`
 				VWAP5m     float64 `json:"vwap_5m"`
 				RelVolume  float64 `json:"rel_volume"`
 				Halted     bool    `json:"halted"`
-				Premarket  bool    `json:"premarket"`
-				Postmarket bool    `json:"postmarket"`
 				Bid        float64 `json:"bid"`
 				Ask        float64 `json:"ask"`
 			}
-			if err := json.Unmarshal(event.Payload, &tick); err != nil {
-				log.Printf("Failed to parse tick event %s: %v", event.ID, err)
+			if err := json.Unmarshal(wireEventStruct.Payload, &tick); err != nil {
+				log.Printf("Failed to parse tick data %s: %v", event.ID, err)
 				continue
 			}
+			// Removed debug logging
 			tf.Ticks = append(tf.Ticks, struct {
 				Symbol     string  `json:"symbol"`
 				Last       float64 `json:"last"`
@@ -237,8 +286,8 @@ func processWireEvents(events []WireEvent) (haltsFile, newsFile, ticksFile, earn
 				VWAP5m:     tick.VWAP5m,
 				RelVolume:  tick.RelVolume,
 				Halted:     tick.Halted,
-				Premarket:  tick.Premarket,
-				Postmarket: tick.Postmarket,
+				Premarket:  false, // Wire data doesn't include market session info
+				Postmarket: false, // Wire data doesn't include market session info
 				Bid:        tick.Bid,
 				Ask:        tick.Ask,
 			})
@@ -727,6 +776,7 @@ func main() {
 			Postmarket: t.Postmarket,
 			SpreadBps:  spreadBps,
 		}
+		// Removed debug logging
 	}
 	
 	// Enrich features with real quotes from adapter
@@ -736,7 +786,9 @@ func main() {
 	}
 	
 	// Fetch quotes from adapter if we have symbols to evaluate
-	if len(symbols) > 0 {
+	// TEST_MODE=fixtures skips quote adapter to use pure fixture data
+	testMode := os.Getenv("TEST_MODE")
+	if len(symbols) > 0 && testMode != "fixtures" {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		

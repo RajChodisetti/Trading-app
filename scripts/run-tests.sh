@@ -39,9 +39,9 @@ run_case () {
   local jsonl="$TMP_DIR/$name.jsonl"
 
   # Run the binary; ensure it exits (uses -oneshot=true by default)
-  # Clear environment variables to allow config file control
+  # Clear environment variables to allow config file control, set TEST_MODE=fixtures for deterministic testing
   unset GLOBAL_PAUSE TRADING_MODE
-  $BIN -config "$cfgfile" 2>"$TMP_DIR/$name.stderr" >"$out" || {
+  TEST_MODE=fixtures $BIN -config "$cfgfile" 2>"$TMP_DIR/$name.stderr" >"$out" || {
     echo "binary exited non-zero. stderr:"; cat "$TMP_DIR/$name.stderr"; exit 1;
   }
 
@@ -272,6 +272,9 @@ echo "outbox entries after second run: orders=$order_count_2"
 
 # --- Case 7: Wire mode ingestion ---
 echo "== Running: wire_mode =="
+
+# Restore original news fixture for wire stub
+cp "$TMP_DIR/news.original.json" "fixtures/news.json" 2>/dev/null || true
 
 # Kill any existing process on port 8091
 pkill -f "cmd/stubs.*port 8091" || true
