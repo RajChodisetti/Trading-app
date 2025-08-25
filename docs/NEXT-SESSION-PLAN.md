@@ -3,7 +3,7 @@
 ## Session Overview
 **Duration**: 60-90 minutes  
 **Type**: Integration & Testing  
-**Focus**: Activate live quote feeds safely and resolve test framework issues
+**Focus**: Activate live quote feeds safely with deterministic testing and promotion gates
 
 ## Context from Session 15
 ✅ **Session 15 Completed**: Real adapter integration architecture with 6 major new files (~2000+ lines)
@@ -17,117 +17,148 @@
 
 ## Session 16 Goals
 
-### Primary Objective: Live Quote Feed Activation
-1. **Fix test framework** - Resolve AAPL trend-lite signal generation inconsistencies
-2. **Enable Alpha Vantage quotes** - Set `live_feeds.yaml` quotes to shadow mode first
-3. **Validate quote cache performance** - Ensure decision p95 <200ms with live data
-4. **Test fallback mechanisms** - Verify Mock→Cache→AlphaVantage fallback chain
+### Primary Objective: Live Quote Feed Activation with Safety Gates
+1. **Fix test framework deterministically** - Inject test clock, single quote source routing
+2. **Enable Alpha Vantage shadow mode** - With hysteresis and promotion gates  
+3. **Validate quote cache performance** - Ensure decision p95 <200ms, hotpath isolation
+4. **Test fallback mechanisms** - Verify Mock→Cache→AlphaVantage with auto-recovery
 
 ### Secondary Objectives: Production Readiness
-5. **Rate limit validation** - Test 5 req/min and daily budget enforcement  
-6. **Health monitoring** - Verify healthy→degraded→failed state transitions
-7. **Observability integration** - Confirm metrics flow to decision engine
-8. **Compliance verification** - Ensure no raw API data storage
+5. **Rate limit + adaptive cadence** - Budget-aware refresh intervals with priority symbols
+6. **Health monitoring with hysteresis** - Prevent flapping with consecutive-breach rules
+7. **Observability + compliance** - /healthz endpoint, payload scanning, structured logs
+8. **Promotion criteria validation** - 30-60min window of stable metrics before live activation
 
 ## Technical Implementation Plan
 
-### Stage 1: Test Framework Stabilization (15-20 min)
-**Problem**: Mock adapter AAPL quotes vs ticks.json fixture inconsistency
-**Root Cause**: Feature processing prioritizes mock quotes over fixture ticks
-**Fix Options**:
-- Option A: Update fixtures to be consistent with mock adapter values
-- Option B: Fix mock adapter to respect fixture overrides  
-- Option C: Separate test configs for different test scenarios
+### Stage 1: Test Framework Deterministic Fix (15-20 min)
+**Problem**: Mock adapter AAPL quotes vs ticks.json fixture inconsistency + time drift
+**Solution**: Option C + deterministic improvements:
+- **TEST_MODE environment routing**: `fixtures` vs `mock` quote sources per test suite
+- **Inject test clock**: Replace `time.Now()` calls in trend-lite with configurable time
+- **Golden intent validation**: Add one-liner AAPL/NVDA/SPY intent map check after `make test`
 
-**Expected Outcome**: Integration tests pass consistently
+**Config Addition**:
+```bash
+# Test routing
+export TEST_MODE=fixtures  # or "mock" 
+export TEST_CLOCK_FREEZE=true
+```
 
-### Stage 2: Alpha Vantage Shadow Mode (20-25 min)
+**Expected Outcome**: Integration tests pass consistently with no time/data source drift
+
+### Stage 2: Alpha Vantage Shadow Mode with Promotion Gates (20-25 min)
 **Config Changes** (`config/live_feeds.yaml`):
 ```yaml
 feeds:
   quotes:
-    live_enabled: false          # Keep false initially
-    shadow_mode: true            # Enable shadow mode
-    provider: "alphavantage"     # Switch from mock
+    live_enabled: false                    # Keep false until promotion gates met
+    shadow_mode: true                      # Enable shadow mode
+    provider: "alphavantage"               # Switch from mock
+    refresh_interval_ms: 800               # Base refresh rate
+    freshness_ceiling_seconds: 5           # RTH staleness limit  
+    hysteresis_seconds: 3                  # Prevent flapping
+    consecutive_breach_to_degrade: 3       # Require 3 consecutive failures
+    consecutive_ok_to_recover: 5           # Require 5 consecutive successes
+    daily_request_cap: 300                 # Conservative daily limit
+    fallback_to_mock: true                 # Ultimate fallback
+    # Priority symbol ordering for adaptive cadence
+    priority_symbols: ["AAPL", "NVDA", "SPY", "TSLA", "QQQ"]
 ```
 
-**Validation Steps**:
-1. Background refresher starts Alpha Vantage adapter
-2. Cache populated with live quotes (verify staleness <5s RTH)
-3. Decision engine still reads from cache (not blocked by rate limits)
-4. Shadow metrics show quote comparison (live vs mock)
+**Promotion Gates (30-60min window required)**:
+- ✅ p95 freshness ≤ 5s RTH (≤ 60s AH) 
+- ✅ p95 decision latency ≤ 200ms
+- ✅ Success rate ≥ 99% (non-error fetches)
+- ✅ Zero liquidity-gate stalls from quote staleness
+- ✅ `hotpath_live_calls_total == 0` (cache isolation verified)
 
-**Success Criteria**: 
-- Decision latency remains <200ms p95
-- Cache hit ratio >90%
-- No rate limit exhaustion
+**Shadow Comparison Heuristics**:
+- Spread ratio `spread_live/spread_mock` within [0.5, 2.0]
+- Mid difference ≤ X bps for large caps
+- Timestamp delta ≤ freshness ceiling
+- Emit `shadow_mismatch_total{kind="spread|mid|staleness"}`
 
-### Stage 3: Health & Fallback Testing (15-20 min)
+**Evidence Collection**: 5-10 screenshots/log snippets of stable metrics for session doc
+
+### Stage 3: Health & Fallback Testing with Auto-Recovery (15-20 min)
 **Test Scenarios**:
-1. **Rate limit simulation**: Exceed 5 req/min threshold
-2. **Provider failure**: Network timeout/error injection
-3. **Stale data handling**: Quotes older than freshness ceiling
-4. **Recovery validation**: Provider returns to healthy state
+1. **Rate limit simulation**: Exceed daily cap threshold → adaptive cadence + fallback
+2. **DNS failure simulation**: Point base URL to unroutable host → timeout handling
+3. **Stale data handling**: Force quotes older than freshness ceiling → degraded state
+4. **Auto-recovery validation**: Restore provider → consecutive-ok recovery to healthy
+5. **Kill switch test**: Flip `disable_live_quotes=true` mid-run → graceful exit + cache/mock continuation
 
-**Expected Behavior**:
-- Healthy → Degraded → Failed state transitions logged
-- Automatic fallback to cache when rate limited
-- Mock adapter fallback when all else fails
-- Decision engine continues operating (no decisions blocked)
+**Expected Behavior with Hysteresis**:
+- Health state changes only after K consecutive breaches/successes (no flapping)
+- Automatic fallback: Live → Cache → Mock with structured transition logging
+- Auto-recovery cool-off: require 5 consecutive healthy probes before leaving failed
+- Decision engine continues operating (zero blocked decisions)
 
-### Stage 4: Observability Integration (10-15 min)
-**Metrics Validation**:
+### Stage 4: Enhanced Observability + Compliance (10-15 min)
+**New /healthz Endpoint** (easier than jq on /metrics):
 ```bash
-curl http://127.0.0.1:8090/metrics | jq '.provider_status'
-curl http://127.0.0.1:8090/metrics | jq '.quote_cache_hit_ratio'
-curl http://127.0.0.1:8090/metrics | jq '.rate_budget_remaining'
+curl http://127.0.0.1:8090/healthz | jq
+# Expected: {"provider":"alphavantage","status":"healthy","freshness_p95_s":2.1,"error_rate_5m":0.0,"fallback":"none"}
 ```
 
-**Dashboard Integration**: Verify new adapter metrics appear in decision logs
+**Compliance Scanning**:
+```bash
+# Unit test to scan logs/metrics for API keys or raw payloads
+go test -run TestComplianceGuard ./internal/adapters
+```
 
-### Stage 5: Production Readiness (5-10 min)
-**Pre-Flight Checklist**:
-- [ ] API key security (env var only, never logged)
-- [ ] Rate limiting enforced (token bucket + daily cap)  
-- [ ] Error handling graceful (no crash on network issues)
-- [ ] Compliance verified (no full content storage)
-- [ ] Kill switches functional (`disable_live_quotes: true`)
+**Key Metrics to Validate**:
+- `hotpath_live_calls_total == 0` (decision isolation)
+- `fallback_activations_total{to="cache|mock"}` + recovery histograms
+- `shadow_mismatch_total{kind="spread|mid|staleness"}` < 2%
+- Health transition events in structured logs
 
-## Acceptance Criteria
+### Stage 5: Production Readiness Validation (5-10 min)
+**Enhanced Pre-Flight Checklist**:
+- [ ] **Hotpath isolation**: `hotpath_live_calls_total == 0` verified
+- [ ] **Promotion gates met**: 30-60min window of stable metrics documented
+- [ ] **Kill switches functional**: `disable_live_quotes=true` → graceful degradation
+- [ ] **Compliance verified**: No payloads/API keys found in logs (TestComplianceGuard passes)
+- [ ] **Auto-recovery tested**: Failed → Healthy transition in <5min after restoration
+- [ ] **Adaptive cadence**: Budget-aware refresh interval adjustment verified
 
-### Must Have ✅
-1. **Tests pass**: All integration tests run cleanly
-2. **Shadow mode works**: Live quotes flow through cache to decisions  
-3. **Performance maintained**: Decision p95 <200ms with live data
-4. **Fallback verified**: Rate limits trigger graceful degradation
-5. **Observability functional**: Provider health metrics visible
+## Enhanced Acceptance Criteria
 
-### Should Have 📋
-6. **Alpha Vantage integration**: Real quotes for AAPL, NVDA, SPY
-7. **Budget management**: Daily cap enforcement with alerts
-8. **Error resilience**: Network failures don't crash system
-9. **State persistence**: Provider health survives restarts
+### Must Have ✅ (Strengthened)
+1. **Tests deterministic**: Integration tests pass consistently with injected clock + TEST_MODE
+2. **Hotpath isolation**: `hotpath_live_calls_total == 0` throughout session
+3. **Promotion gates met**: ≥30min window of p95 freshness ≤5s, latency ≤200ms, success rate ≥99%
+4. **Fallback chain verified**: Live → Cache → Mock with structured logging
+5. **Compliance validated**: TestComplianceGuard passes (no API keys/payloads in logs)
 
-### Nice to Have ➕
-10. **Multiple symbols**: Cache warming for priority symbols
-11. **Batch optimization**: Multiple quote requests minimized
-12. **Adaptive refresh**: Refresh rate adjusts based on market hours
+### Should Have 📋 (Enhanced)
+6. **Shadow mismatch ratio**: <2% of samples across priority symbols
+7. **Auto-recovery validated**: Failed → Healthy in <5min with consecutive-ok rules
+8. **Health hysteresis**: State changes only after K consecutive breaches (no flapping)
+9. **Adaptive cadence**: Refresh interval widens when budget <15%, shrinks when >40%
 
-## Risk Mitigation
+### Nice to Have ➕ (Production-Ready)
+10. **Structured health events**: from/to/reason/window_stats in logs
+11. **Symbol prioritization**: Positions > watchlist > rest during budget constraints
+12. **Shadow comparison alerts**: Spread/mid/staleness mismatch detection
 
-### High Risk 🚨
-- **API key exposure**: Never log API keys, secure env var handling
-- **Rate limit violation**: Could exhaust daily quota, implement conservative limits
-- **Decision latency**: Live quotes might slow decision engine below SLA
+## Risk Mitigation (Enhanced)
 
-### Medium Risk ⚠️ 
-- **Provider reliability**: Alpha Vantage downtime affects quote quality
-- **Data quality**: Stale/invalid quotes could trigger bad decisions
-- **Memory usage**: Quote cache growth without proper eviction
+### High Risk 🚨 (Tightened)
+- **Latency spikes**: Hotpath isolation ensures decision loop reads only from cache (`cache_miss_total == 0`)
+- **Quota burn**: Adaptive cadence + per-symbol priority + daily cap hard stop
+- **Health flapping**: Hysteresis (3 consecutive failures) + K-consecutive recovery rule
 
-### Low Risk ℹ️
-- **Configuration complexity**: Feature flags might be confusing
-- **Testing overhead**: VCR recordings need maintenance
+### Medium Risk ⚠️ (New Controls)
+- **Test drift**: Injected clock + single quote source per suite (TEST_MODE routing)
+- **Provider reliability**: Shadow mode + automatic fallback with auto-recovery
+- **Data quality**: Shadow comparison heuristics catch suspicious spread/mid/staleness differences
+
+### Low Risk ℹ️ (Operational)  
+- **Promotion timing**: Clear 30-60min stability gates prevent premature live activation
+- **Configuration complexity**: /healthz JSON endpoint simplifies monitoring vs metrics scraping
+- **Compliance audit**: TestComplianceGuard scans for payload/API key leakage
 
 ## Session Handoff Notes
 
@@ -149,13 +180,48 @@ curl http://127.0.0.1:8090/metrics | jq '.rate_budget_remaining'
 - `fixtures/ticks.json` - Test data consistency
 - `scripts/run-tests.sh` - Test harness validation
 
-## Environment Setup
+## Environment Setup (Enhanced)
 ```bash
+# Required for live integration
 export ALPHAVANTAGE_API_KEY="your_key_here"  
 export LIVE_QUOTES_ENABLED="false"           # Shadow mode first
-make test                                     # Baseline test pass
+
+# Test determinism controls
+export TEST_MODE="fixtures"                  # or "mock" for different suites
+export TEST_CLOCK_FREEZE="true"             # Inject deterministic time
+
+# Validation pipeline
+make test                                     # Baseline test pass with golden intent check
+go test -run TestComplianceGuard ./internal/adapters  # API key/payload scanning
 go run ./cmd/decision -oneshot=true          # Manual quote validation
+curl http://127.0.0.1:8090/healthz | jq     # Health endpoint validation
+```
+
+## Actionable TODO Items (Ready for Session 16)
+- [ ] Inject test clock into trend-lite and VWAP computations
+- [ ] Add TEST_MODE routing for quotes (fixtures vs mock)
+- [ ] Implement health hysteresis & consecutive-breach rules  
+- [ ] Add /healthz JSON endpoint with provider status & freshness
+- [ ] Add `hotpath_live_calls_total` guard metric & CI assertion
+- [ ] Write TestComplianceGuard to scan logs for payload/API keys
+- [ ] Document promotion criteria checklist (append to session doc)
+
+## Ready-to-Use Config (Paste into live_feeds.yaml)
+```yaml
+feeds:
+  quotes:
+    live_enabled: false                    # Keep false until promotion gates met
+    shadow_mode: true                      # Enable shadow mode  
+    provider: "alphavantage"               # Switch from mock
+    refresh_interval_ms: 800               # Base refresh rate
+    freshness_ceiling_seconds: 5           # RTH staleness limit
+    hysteresis_seconds: 3                  # Prevent flapping
+    consecutive_breach_to_degrade: 3       # Require 3 consecutive failures
+    consecutive_ok_to_recover: 5           # Require 5 consecutive successes  
+    daily_request_cap: 300                 # Conservative daily limit
+    fallback_to_mock: true                 # Ultimate fallback
+    priority_symbols: ["AAPL", "NVDA", "SPY", "TSLA", "QQQ"]
 ```
 
 ---
-**Next Session After 16**: Live halts feed integration with NASDAQ/Polygon shadow mode testing
+**Next Session After 16**: Live halts feed integration with NASDAQ/Polygon shadow mode + same promotion gate methodology
