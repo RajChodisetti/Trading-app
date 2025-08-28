@@ -1,215 +1,196 @@
-# Session 17: Live Quote Feeds - Alpha Vantage Shadow Mode & Production Readiness
+# Session 18: Live Mode Promotion & Multi-Provider Foundation
 
 ## Session Overview
 **Duration**: 60-90 minutes  
-**Type**: Integration & Production Activation  
-**Focus**: Enable Alpha Vantage shadow mode with promotion gates for live quote feed activation
+**Type**: Production Activation & Architecture Enhancement  
+**Focus**: Promote to live mode after validation + foundation for multi-provider scaling
 
-## Context from Session 16
-✅ **Session 16 Stage 1 Completed**: Test framework deterministically fixed
-- Implemented `TEST_MODE=fixtures` environment routing for deterministic testing
-- Fixed critical wire mode bug in nested payload parsing (news sentiment + trend-lite now working)
-- Resolved all integration test failures (after_hours, pr_only, wire_mode)
-- Applied consistent fixture-based testing across all test cases
+## Context from Session 17
+✅ **Session 17 Completed**: Alpha Vantage Shadow Mode & Production Readiness
+- Implemented comprehensive live quote adapter with canary rollout
+- Added shadow mode with budget-aware sampling and mismatch detection
+- Built automated promotion gates checker with 30s intervals
+- Created hotpath protection with live call tracking
+- Added health monitoring with hysteresis and graceful shutdown
+- Validated all acceptance criteria with comprehensive testing
 
-🎯 **Ready for Stage 2**: Live adapter integration with safety gates and promotion criteria
+🎯 **Ready for Session 18**: Live mode activation + multi-provider foundation
 
-## Session 17 Goals
+## Session 18 Goals
 
-### Primary Objective: Alpha Vantage Shadow Mode Activation
-1. **Enable Alpha Vantage shadow mode** - With hysteresis and promotion gates  
-2. **Validate quote cache performance** - Ensure decision p95 <200ms, hotpath isolation
-3. **Test fallback mechanisms** - Verify Mock→Cache→AlphaVantage with auto-recovery
-4. **Production readiness validation** - Meet 30-60min stability window for promotion gates
+### Primary Objective: Live Mode Promotion
+1. **Validate promotion gates in production** - Run 30-60 min validation window
+2. **Activate live mode safely** - Enable `live_enabled: true` with monitoring
+3. **Verify live performance** - Confirm P95 latency <200ms, success rate >99%
+4. **Test emergency procedures** - Validate kill switches and rollback mechanisms
 
-### Secondary Objectives: Enhanced Observability
-5. **Rate limit + adaptive cadence** - Budget-aware refresh intervals with priority symbols
-6. **Health monitoring with hysteresis** - Prevent flapping with consecutive-breach rules
-7. **Observability + compliance** - /healthz endpoint, payload scanning, structured logs
-8. **Live activation criteria** - Validate promotion gates and enable live mode safely
+### Secondary Objective: Multi-Provider Foundation  
+5. **Polygon.io integration** - Add second live provider with same safety framework
+6. **Provider failover logic** - Automatic provider switching on health degradation
+7. **Comparative analytics** - Cross-provider quality metrics and cost analysis
+8. **Scalable adapter factory** - Generic framework for adding new providers
 
 ## Technical Implementation Plan
 
-### Stage 2: Alpha Vantage Shadow Mode with Promotion Gates (20-25 min)
-**Config Changes** (`config/live_feeds.yaml`):
+### Stage 1: Live Mode Promotion (25-30 min)
+**Pre-flight Validation:**
+```bash
+# Run promotion gates checker for 30+ minutes
+./scripts/check-promotion.sh --window-minutes 30
+
+# Must show PASS status with:
+# - Freshness P95 ≤ 5000ms (RTH), ≤ 60000ms (AH)
+# - Success rate ≥ 99%
+# - Decision P95 ≤ 200ms  
+# - hotpath_live_calls_total == 0
+# - Shadow mismatch rate ≤ 2%
+```
+
+**Live Activation Steps:**
+1. **Environment setup**:
+   ```yaml
+   # config/live_feeds.yaml
+   feeds:
+     quotes:
+       live_enabled: true              # 🚨 Enable live mode
+       shadow_mode: true               # Keep shadow for comparison
+       provider: "alphavantage"
+   ```
+
+2. **Monitoring dashboard**: Real-time metrics validation
+3. **Emergency procedures**: Test kill switches and rollback
+4. **Performance validation**: Confirm live performance metrics
+
+### Stage 2: Polygon.io Integration (25-30 min)
+**Provider Implementation:**
 ```yaml
-feeds:
-  quotes:
-    live_enabled: false                    # Keep false until promotion gates met
-    shadow_mode: true                      # Enable shadow mode
-    provider: "alphavantage"               # Switch from mock
-    refresh_interval_ms: 800               # Base refresh rate
-    freshness_ceiling_seconds: 5           # RTH staleness limit  
-    hysteresis_seconds: 3                  # Prevent flapping
-    consecutive_breach_to_degrade: 3       # Require 3 consecutive failures
-    consecutive_ok_to_recover: 5           # Require 5 consecutive successes
-    daily_request_cap: 300                 # Conservative daily limit
-    fallback_to_mock: true                 # Ultimate fallback
-    # Priority symbol ordering for adaptive cadence
-    priority_symbols: ["AAPL", "NVDA", "SPY", "TSLA", "QQQ"]
+# Add to config/live_feeds.yaml
+providers:
+  polygon:
+    api_key_env: "POLYGON_API_KEY"
+    rate_limit_per_minute: 100        # Much higher than AV
+    daily_request_cap: 50000          # Professional tier
+    base_url: "https://api.polygon.io/v2"
+    timeout_seconds: 5
+    
+    # Polygon advantages
+    real_time_data: true              # vs AV delayed quotes
+    batch_support: true               # vs AV single quotes only
+    websocket_streaming: true         # Future enhancement
 ```
 
-**Promotion Gates (30-60min window required)**:
-- ✅ p95 freshness ≤ 5s RTH (≤ 60s AH) 
-- ✅ p95 decision latency ≤ 200ms
-- ✅ Success rate ≥ 99% (non-error fetches)
-- ✅ Zero liquidity-gate stalls from quote staleness
-- ✅ `hotpath_live_calls_total == 0` (cache isolation verified)
+**Multi-Provider Architecture:**
+```go
+// internal/adapters/provider_manager.go
+type ProviderManager struct {
+    providers    map[string]QuotesAdapter
+    healthStates map[string]HealthState
+    failoverRule FailoverStrategy
+}
 
-**Shadow Comparison Heuristics**:
-- Spread ratio `spread_live/spread_mock` within [0.5, 2.0]
-- Mid difference ≤ X bps for large caps
-- Timestamp delta ≤ freshness ceiling
-- Emit `shadow_mismatch_total{kind="spread|mid|staleness"}`
-
-**Evidence Collection**: 5-10 screenshots/log snippets of stable metrics for session doc
-
-### Stage 3: Health & Fallback Testing with Auto-Recovery (15-20 min)
-**Test Scenarios**:
-1. **Rate limit simulation**: Exceed daily cap threshold → adaptive cadence + fallback
-2. **DNS failure simulation**: Point base URL to unroutable host → timeout handling
-3. **Stale data handling**: Force quotes older than freshness ceiling → degraded state
-4. **Auto-recovery validation**: Restore provider → consecutive-ok recovery to healthy
-5. **Kill switch test**: Flip `disable_live_quotes=true` mid-run → graceful exit + cache/mock continuation
-
-**Expected Behavior with Hysteresis**:
-- Health state changes only after K consecutive breaches/successes (no flapping)
-- Automatic fallback: Live → Cache → Mock with structured transition logging
-- Auto-recovery cool-off: require 5 consecutive healthy probes before leaving failed
-- Decision engine continues operating (zero blocked decisions)
-
-### Stage 4: Enhanced Observability + Compliance (10-15 min)
-**New /healthz Endpoint** (easier than jq on /metrics):
-```bash
-curl http://127.0.0.1:8090/healthz | jq
-# Expected: {"provider":"alphavantage","status":"healthy","freshness_p95_s":2.1,"error_rate_5m":0.0,"fallback":"none"}
+// Failover strategies:
+// - Primary/Secondary: AV primary, Polygon backup
+// - Load Balancing: Distribute by symbol hash
+// - Quality-Based: Route to best-performing provider
 ```
 
-**Compliance Scanning**:
-```bash
-# Unit test to scan logs/metrics for API keys or raw payloads
-go test -run TestComplianceGuard ./internal/adapters
+### Stage 3: Enhanced Analytics (10-15 min)
+**Cross-Provider Metrics:**
+```go
+type ProviderComparison struct {
+    Provider       string    `json:"provider"`
+    SuccessRate    float64   `json:"success_rate"`
+    LatencyP95Ms   int64     `json:"latency_p95_ms"`
+    FreshnessP95Ms int64     `json:"freshness_p95_ms"`
+    CostPerQuote   float64   `json:"cost_per_quote"`
+    DataQuality    float64   `json:"data_quality_score"`
+}
 ```
 
-**Key Metrics to Validate**:
-- `hotpath_live_calls_total == 0` (decision isolation)
-- `fallback_activations_total{to="cache|mock"}` + recovery histograms
-- `shadow_mismatch_total{kind="spread|mid|staleness"}` < 2%
-- Health transition events in structured logs
+**Quality Scoring:**
+- Freshness weight: 40%
+- Spread accuracy: 30% 
+- Uptime/reliability: 20%
+- Cost efficiency: 10%
 
-### Stage 5: Production Readiness & Live Activation (5-10 min)
-**Enhanced Pre-Flight Checklist**:
-- [ ] **Hotpath isolation**: `hotpath_live_calls_total == 0` verified
-- [ ] **Promotion gates met**: 30-60min window of stable metrics documented
-- [ ] **Kill switches functional**: `disable_live_quotes=true` → graceful degradation
-- [ ] **Compliance verified**: No payloads/API keys found in logs (TestComplianceGuard passes)
-- [ ] **Auto-recovery tested**: Failed → Healthy transition in <5min after restoration
-- [ ] **Adaptive cadence**: Budget-aware refresh interval adjustment verified
+## Acceptance Criteria
 
-**Live Activation Process**:
-1. Validate all promotion gates over 30-60min window
-2. Document evidence collection (metrics screenshots)
-3. Update `live_enabled: true` in config
-4. Monitor hotpath isolation and fallback behavior
-5. Verify decision latency remains <200ms
+### Must Have (Live Promotion)
+- [ ] Promotion gates pass consistently for ≥30 minutes
+- [ ] Live mode activated with monitoring dashboard  
+- [ ] Emergency kill switch tested and verified
+- [ ] P95 decision latency remains ≤200ms in live mode
+- [ ] Success rate maintains ≥99% in live mode
 
-## Enhanced Acceptance Criteria
+### Should Have (Multi-Provider)  
+- [ ] Polygon.io adapter implemented with same safety framework
+- [ ] Provider failover tested (AV degraded → Polygon activated)
+- [ ] Cross-provider quality metrics dashboard
+- [ ] Cost analysis showing $/quote for each provider
 
-### Must Have ✅ (Production Critical)
-1. **Shadow mode active**: Alpha Vantage running in shadow mode with comparison metrics
-2. **Hotpath isolation**: `hotpath_live_calls_total == 0` throughout session
-3. **Promotion gates met**: ≥30min window of p95 freshness ≤5s, latency ≤200ms, success rate ≥99%
-4. **Fallback chain verified**: Live → Cache → Mock with structured logging
-5. **Compliance validated**: TestComplianceGuard passes (no API keys/payloads in logs)
-
-### Should Have 📋 (Enhanced Safety)
-6. **Shadow mismatch ratio**: <2% of samples across priority symbols
-7. **Auto-recovery validated**: Failed → Healthy in <5min with consecutive-ok rules
-8. **Health hysteresis**: State changes only after K consecutive breaches (no flapping)
-9. **Adaptive cadence**: Refresh interval widens when budget <15%, shrinks when >40%
-
-### Nice to Have ➕ (Production-Ready)
-10. **Structured health events**: from/to/reason/window_stats in logs
-11. **Symbol prioritization**: Positions > watchlist > rest during budget constraints
-12. **Shadow comparison alerts**: Spread/mid/staleness mismatch detection
-13. **Live mode activation**: If promotion gates met, enable live mode safely
+### Nice to Have (Architecture)
+- [ ] Generic provider factory for easy extension
+- [ ] WebSocket streaming foundation (Polygon)  
+- [ ] Provider load balancing based on symbol routing
+- [ ] Historical provider performance tracking
 
 ## Risk Mitigation
 
-### High Risk 🚨 (Tightened)
-- **Latency spikes**: Hotpath isolation ensures decision loop reads only from cache (`cache_miss_total == 0`)
-- **Quota burn**: Adaptive cadence + per-symbol priority + daily cap hard stop
-- **Health flapping**: Hysteresis (3 consecutive failures) + K-consecutive recovery rule
+### Live Mode Risks
+- **Latency spike**: Auto-fallback to cache if P95 >500ms
+- **API rate limits**: Budget monitoring with automatic throttling
+- **Provider outage**: Immediate fallback to mock with alerts
+- **Cost overrun**: Hard daily caps with automatic disable
 
-### Medium Risk ⚠️ (New Controls)
-- **Provider reliability**: Shadow mode + automatic fallback with auto-recovery
-- **Data quality**: Shadow comparison heuristics catch suspicious spread/mid/staleness differences
-- **Live activation premature**: Require 30-60min stability window before live mode
+### Multi-Provider Risks  
+- **Configuration complexity**: Use provider profiles with validation
+- **State synchronization**: Independent health tracking per provider
+- **Failover timing**: Fast detection (10s) with hysteresis (2min)
 
-### Low Risk ℹ️ (Operational)  
-- **Promotion timing**: Clear stability gates prevent premature live activation
-- **Configuration complexity**: /healthz JSON endpoint simplifies monitoring vs metrics scraping
-- **Compliance audit**: TestComplianceGuard scans for payload/API key leakage
+## Success Metrics
 
-## Session Handoff Notes
+### Live Mode KPIs
+- Decision latency P95: <200ms (target: 150ms)
+- Quote success rate: >99% (target: 99.5%)
+- Cache hit rate: >80% (cost optimization)
+- Shadow mismatch rate: <2% (data quality)
 
-**Session 16 Achievements**:
-✅ **Test Framework Deterministic**: Fixed all integration test failures
-✅ **Wire Mode Fixed**: Nested payload parsing for news sentiment + trend-lite working
-✅ **Consistent Testing**: All tests use pure fixture data with TEST_MODE routing
+### Multi-Provider KPIs  
+- Provider availability: >99.9% combined
+- Failover time: <10 seconds detection, <30s recovery
+- Cost efficiency: <$0.01 per quote (blended)
+- Data quality score: >95% across all providers
 
-**If Session 17 succeeds:**
-- Ready for Session 18: Live halts feed integration
-- Quote cache architecture validated for other data feeds  
-- Provider health monitoring proven for scaled deployment
-- Live quote feeds activated safely with promotion gates
+## Implementation Notes
 
-## Files to Focus On
-- `config/live_feeds.yaml` - Feature flag configuration (create this file)
-- `internal/adapters/integration_test.go` - Shadow mode and health testing
-- `internal/adapters/quotes.go` - Alpha Vantage integration and caching
-- `cmd/decision/main.go` - Hotpath isolation verification
-- `internal/observability/` - Health endpoint and compliance scanning
+### Alpha Vantage Production Considerations
+- Free tier: 300 requests/day (sufficient for shadow mode)
+- Paid tier: 75 requests/min (needed for live mode scaling)
+- Data delay: 15-20 minutes (acceptable for paper trading)
+- Upgrade trigger: Daily request usage >250
 
-## Environment Setup
-```bash
-# Required for live integration
-export ALPHAVANTAGE_API_KEY="your_key_here"  
-export LIVE_QUOTES_ENABLED="false"           # Shadow mode first
+### Polygon.io Evaluation Criteria
+- Real-time data: Sub-second freshness
+- Higher rate limits: 100+ requests/minute  
+- Better reliability: 99.9% uptime SLA
+- WebSocket streaming: Future foundation for real-time feeds
 
-# Validation pipeline
-make test                                     # Should pass consistently now
-go test -run TestComplianceGuard ./internal/adapters  # API key/payload scanning
-go run ./cmd/decision -oneshot=true          # Manual quote validation
-curl http://127.0.0.1:8090/healthz | jq     # Health endpoint validation
-```
+### Session Flow
+1. **00-10min**: Validate Session 17 implementation, run promotion gates
+2. **10-40min**: Live mode activation with monitoring and validation
+3. **40-65min**: Polygon.io adapter implementation and testing
+4. **65-75min**: Multi-provider failover testing and quality metrics
+5. **75-90min**: Documentation, commit, and Session 19 planning
 
-## Actionable TODO Items (Ready for Session 17)
-- [ ] Create live_feeds.yaml config file with shadow mode settings
-- [ ] Implement health hysteresis & consecutive-breach rules  
-- [ ] Add /healthz JSON endpoint with provider status & freshness
-- [ ] Add `hotpath_live_calls_total` guard metric & CI assertion
-- [ ] Write TestComplianceGuard to scan logs for payload/API keys
-- [ ] Document promotion criteria checklist (append to session doc)
-- [ ] Enable Alpha Vantage shadow mode and collect evidence
-- [ ] Validate promotion gates over 30-60min window
+## Tools & Scripts Needed
+- [ ] `scripts/validate-live-promotion.sh` - Pre-flight promotion validation
+- [ ] `scripts/monitor-live-mode.sh` - Real-time live mode monitoring  
+- [ ] `scripts/test-provider-failover.sh` - Multi-provider failover testing
+- [ ] Enhanced `/healthz` endpoint with provider comparison
 
-## Ready-to-Use Config (Create config/live_feeds.yaml)
-```yaml
-feeds:
-  quotes:
-    live_enabled: false                    # Keep false until promotion gates met
-    shadow_mode: true                      # Enable shadow mode  
-    provider: "alphavantage"               # Switch from mock
-    refresh_interval_ms: 800               # Base refresh rate
-    freshness_ceiling_seconds: 5           # RTH staleness limit
-    hysteresis_seconds: 3                  # Prevent flapping
-    consecutive_breach_to_degrade: 3       # Require 3 consecutive failures
-    consecutive_ok_to_recover: 5           # Require 5 consecutive successes  
-    daily_request_cap: 300                 # Conservative daily limit
-    fallback_to_mock: true                 # Ultimate fallback
-    priority_symbols: ["AAPL", "NVDA", "SPY", "TSLA", "QQQ"]
-```
+## Dependencies
+- **External**: Polygon.io API key and rate limits understanding
+- **Internal**: Session 17 promotion gates passing consistently
+- **Testing**: Comprehensive multi-provider test scenarios
 
----
-**Next Session After 17**: Live halts feed integration with NASDAQ/Polygon shadow mode + same promotion gate methodology
+**Expected Outcome**: Production-ready live quote feeds with multi-provider failover capability, setting foundation for real-time market data at scale.

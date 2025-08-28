@@ -1097,6 +1097,7 @@ func main() {
 			observ.Handler().ServeHTTP(w, r)
 		}))
 		mux.Handle("/health", observ.Health())
+		mux.Handle("/healthz", observ.HealthHandler())
 		addr := "127.0.0.1:8090" // bind to loopback to avoid firewall prompts
 		observ.Log("metrics_listen", map[string]any{"addr": addr})
 		go func() { _ = http.ListenAndServe(addr, mux) }()

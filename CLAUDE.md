@@ -4,7 +4,7 @@ A trustworthy, low-latency trading backend that reacts to credible market-moving
 
 ## Current Implementation Status
 
-### ✅ Completed (Sessions 1-11)
+### ✅ Completed (Sessions 1-17)
 - **Decision Engine**: Core gates (global_pause, halt, session, liquidity, corroboration, earnings_embargo, frozen) and threshold mapping
 - **Structured Logging**: JSON decision reasons with fused scores and gate details
 - **Testing Framework**: End-to-end integration tests with 10 comprehensive scenarios covering all gate logic, wire ingestion, Slack integration, and risk controls
@@ -17,12 +17,14 @@ A trustworthy, low-latency trading backend that reacts to credible market-moving
 - **Slack Alerts & Controls**: Real-time decision alerts with rate limiting, slash commands for operational control (/pause, /resume, /freeze), and runtime configuration overrides
 - **Advanced Risk Controls**: Stop-loss with 24h cooldown, sector exposure limits (40% max), drawdown monitoring (2%/3% daily thresholds), and Slack dashboard for real-time portfolio monitoring
 - **SSE Streaming Transport**: Real-time Server-Sent Events transport with reconnection logic, gap detection, backpressure handling, and 700% performance improvement over HTTP polling
+- **Live Quote Feeds (Session 17)**: Alpha Vantage shadow mode with canary rollout, budget-aware sampling, hotpath protection, health monitoring with hysteresis, promotion gates automation, and comprehensive production readiness validation
 
 ### 🚧 Current Architecture
 
 **Data Flow**: 
 - **Fixture Mode**: Fixtures → Advice Fusion → Gates → Decision → Outbox (paper mode) → Logging
 - **Wire Mode**: Wire Stub (SSE streaming/HTTP fallback) → Event Processing → Advice Fusion → Gates → Decision → Outbox → Logging
+- **Shadow Mode**: Live Provider (Alpha Vantage) → Cache → Shadow Comparison → Decision Engine (hotpath isolated) → Outbox → Promotion Gates
 
 **Key Files**:
 - `cmd/decision/main.go` - Main decision runner with oneshot mode, SSE streaming client, Slack alerts, runtime override polling, and paper trading integration
@@ -33,6 +35,13 @@ A trustworthy, low-latency trading backend that reacts to credible market-moving
 - `internal/outbox/` - Paper trading outbox with order/fill persistence and idempotency
 - `internal/transport/` - Transport abstraction with SSE and HTTP clients, reconnection logic, and streaming metrics
 - `internal/config/config.go` - Full configuration including Slack, security, and runtime override settings
+- `internal/adapters/live_quotes.go` - Live quote adapter with shadow mode, canary rollout, health monitoring, and cache bounds
+- `internal/adapters/live_integration.go` - Integration layer with comprehensive metrics and promotion gate evaluation
+- `internal/adapters/state_persistence.go` - State persistence and graceful shutdown management
+- `internal/observ/metrics.go` - Enhanced health monitoring with `/healthz` endpoint for promotion gates
+- `scripts/check-promotion.sh` - Automated promotion gates checker with rolling window validation
+- `scripts/demo-shadow-mode.sh` - Live demonstration script for shadow mode functionality
+- `config/live_feeds.yaml` - Live feed configuration with canary approach and adaptive tiers
 - `scripts/run-tests.sh` - Integration test harness with 8 test cases including Slack integration
 - `fixtures/` - Deterministic test scenarios
 
@@ -110,9 +119,9 @@ Environment variables override config.yaml:
 ## Planned Development (Sessions 12+)
 
 ### Next Sessions (Priority Order)
-1. **Session 12**: Real adapter integrations (start with quotes)
-2. **Session 13**: Drawdown monitoring and circuit breakers
-3. **Session 14+**: Additional real adapter swaps (news, halts, sentiment)
+1. **Session 18**: Live mode promotion + multi-provider foundation (Polygon.io)
+2. **Session 19**: Real-time WebSocket feeds + streaming architecture
+3. **Session 20+**: Additional live feeds (halts, news, sentiment) with same promotion gate framework
 
 ### Gate Roadmap
 - ✅ `global_pause`, `halt`, `session`, `liquidity`, `corroboration`, `earnings_embargo`, `frozen`
@@ -151,7 +160,13 @@ go run ./cmd/decision -oneshot=true                                            #
 
 # Monitoring
 curl http://127.0.0.1:8090/metrics | jq .                                     # View metrics (includes Slack metrics)
-curl http://127.0.0.1:8090/health                                             # Health check endpoint
+curl http://127.0.0.1:8090/health                                             # Health check endpoint  
+curl http://127.0.0.1:8090/healthz | jq .                                     # Comprehensive health with promotion gates
+
+# Shadow mode and live feeds (Session 17+)
+ALPHAVANTAGE_API_KEY=your_key ./scripts/demo-shadow-mode.sh                    # Demo shadow mode functionality
+./scripts/check-promotion.sh --window-minutes 30                              # Check promotion gates
+QUOTES=alphavantage GLOBAL_PAUSE=false go run ./cmd/decision -oneshot=false   # Run with Alpha Vantage
 ```
 
 ## Recent Improvements (Session 5+)

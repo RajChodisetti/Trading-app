@@ -2,33 +2,55 @@
 # Stage rollout: Quotes -> Halts -> News
 
 feeds:
-  # Quotes feed configuration (Stage 1: Active)
+  # Quotes feed configuration (Stage 1: Shadow Mode with Canary)
   quotes:
     live_enabled: false                    # Enable live quotes (feature flag)
+    shadow_mode: true                      # Run alongside mock for comparison
     provider: "alphavantage"               # "alphavantage" | "polygon" | "mock"
-    shadow_mode: false                     # Run alongside mock for comparison
+    
+    # Canary rollout settings
+    canary_symbols: ["AAPL","SPY"]         # Start with canary symbols
+    priority_symbols: ["AAPL","NVDA","SPY","TSLA","QQQ"]  # Expand to priority symbols
+    canary_duration_minutes: 15            # How long to run canary before expanding
+    
+    # Adaptive refresh by priority tiers
+    tiers:
+      positions_ms: 800                    # Open positions (highest priority)
+      watchlist_ms: 2500                   # Watchlist symbols  
+      others_ms: 6000                      # Other symbols (lowest priority)
     
     # Freshness and quality requirements
     freshness_ceiling_seconds: 5           # Max quote age during RTH
     freshness_ceiling_ah_seconds: 60       # Max quote age after hours
-    refresh_interval_ms: 800               # Background refresh rate
-    cache_ttl_seconds: 10                  # Local cache TTL
+    hysteresis_seconds: 3                  # Consecutive breach window
+    consecutive_breach_to_degrade: 3       # Consecutive breaches to degrade
+    consecutive_ok_to_recover: 5           # Consecutive OK to recover
     
-    # Rate limiting and budget
+    # Cache configuration with bounds
+    cache:
+      max_entries: 2000                    # Max symbols in cache
+      ttl_seconds: 60                      # Cache TTL
+      max_age_extend_seconds: 300          # Max extension when rate limited
+    
+    # Rate limiting and budget management
     requests_per_minute: 5                 # Alpha Vantage free tier
-    daily_request_cap: 100                 # Conservative daily limit
+    daily_request_cap: 300                 # Conservative daily limit
+    budget_warning_pct: 15                 # Alert when budget < 15%
     batch_size: 1                          # Alpha Vantage doesn't support batch
+    shadow_sample_rate: 0.2                # Sample 20% of events for comparison
     
     # Fallback behavior
     fallback_to_cache: true                # Use cache when rate limited
     fallback_to_mock: true                 # Use mock when all else fails
-    cache_extend_on_limit: true            # Extend cache TTL when rate limited
     
-    # Health thresholds
-    degraded_error_rate: 0.01              # 1% error rate = degraded
-    failed_error_rate: 0.10                # 10% error rate = failed
-    recovery_window_minutes: 5             # Time to recover from failure
-    max_consecutive_errors: 5              # Max errors before marking failed
+    # Health thresholds with hysteresis
+    health:
+      degraded_error_rate: 0.01            # 1% error rate = degraded
+      failed_error_rate: 0.05              # 5% error rate = failed (lowered)
+      recovery_window_minutes: 5           # Time to recover from failure
+      max_consecutive_errors: 3            # Max errors before marking failed (lowered)
+      freshness_p95_threshold_ms: 5000     # P95 freshness must be < 5s
+      success_rate_threshold: 0.99         # 99% success rate required
     
     # Alpha Vantage specific config
     alphavantage:
