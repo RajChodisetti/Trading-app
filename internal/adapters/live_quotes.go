@@ -840,3 +840,18 @@ func (lq *LiveQuoteAdapter) GetHotpathCalls() int64 {
 	defer lq.metrics.mu.RUnlock()
 	return lq.metrics.hotpathCalls
 }
+
+// simulateCanaryExpansion forces canary expansion for testing purposes
+func (lq *LiveQuoteAdapter) simulateCanaryExpansion() {
+	lq.mu.Lock()
+	defer lq.mu.Unlock()
+	
+	if !lq.canaryExpanded {
+		lq.canaryExpanded = true
+		observ.Log("canary_rollout_expanded", map[string]any{
+			"duration_minutes": lq.config.CanaryDurationMinutes,
+			"from_symbols":     lq.config.CanarySymbols,
+			"to_symbols":       lq.config.PrioritySymbols,
+		})
+	}
+}

@@ -2,16 +2,19 @@
 # Stage rollout: Quotes -> Halts -> News
 
 feeds:
-  # Quotes feed configuration (Stage 1: Shadow Mode with Canary)
+  # Quotes feed configuration (Session 18: Live Mode + Multi-Provider)
   quotes:
     live_enabled: false                    # Enable live quotes (feature flag)
     shadow_mode: true                      # Run alongside mock for comparison
-    provider: "alphavantage"               # "alphavantage" | "polygon" | "mock"
+    provider_active: "alphavantage"        # Current active provider
+    provider_warm: "polygon"               # Warm-spare provider
     
-    # Canary rollout settings
-    canary_symbols: ["AAPL","SPY"]         # Start with canary symbols
+    # Gradual live activation (canary → priority → full)
+    live_symbols_allowlist: ["AAPL","SPY"] # Start with canary symbols only
+    canary_symbols: ["AAPL","SPY"]         # Canary symbols for initial live testing
     priority_symbols: ["AAPL","NVDA","SPY","TSLA","QQQ"]  # Expand to priority symbols
-    canary_duration_minutes: 15            # How long to run canary before expanding
+    canary_duration_minutes: 10            # Canary live duration before expansion
+    priority_duration_minutes: 15          # Priority duration before full activation
     
     # Adaptive refresh by priority tiers
     tiers:
@@ -43,7 +46,7 @@ feeds:
     fallback_to_cache: true                # Use cache when rate limited
     fallback_to_mock: true                 # Use mock when all else fails
     
-    # Health thresholds with hysteresis
+    # Health thresholds with hysteresis and circuit breakers
     health:
       degraded_error_rate: 0.01            # 1% error rate = degraded
       failed_error_rate: 0.05              # 5% error rate = failed (lowered)
@@ -51,14 +54,39 @@ feeds:
       max_consecutive_errors: 3            # Max errors before marking failed (lowered)
       freshness_p95_threshold_ms: 5000     # P95 freshness must be < 5s
       success_rate_threshold: 0.99         # 99% success rate required
+      degrade_cooldown_seconds: 120        # Cooldown before re-promoting degraded provider
+      
+    # Circuit breaker per provider
+    circuit_breaker:
+      error_threshold: 0.10                # 10% error rate trips breaker
+      consecutive_failures: 5              # Consecutive failures to trip
+      cooldown_minutes: 2                  # Cooldown before retry
+      probe_interval_seconds: 30           # How often to probe during cooldown
+
+# Multi-Provider Configuration
+providers:
+  alphavantage:
+    api_key_env: "ALPHAVANTAGE_API_KEY"
+    requests_per_minute: 5
+    daily_request_cap: 300
+    base_url: "https://www.alphavantage.co/query"
+    timeout_seconds: 10
+    retry_attempts: 2
+    backoff_base_ms: 1000
+    cost_per_request_usd: 0.001           # Estimated cost for budget tracking
+    data_delay_minutes: 15                # Expected data delay
     
-    # Alpha Vantage specific config
-    alphavantage:
-      api_key: "${ALPHAVANTAGE_API_KEY}"   # From environment
-      base_url: "https://www.alphavantage.co/query"
-      timeout_seconds: 10
-      retry_attempts: 2
-      backoff_base_ms: 1000
+  polygon:
+    api_key_env: "POLYGON_API_KEY"
+    requests_per_minute: 100
+    daily_request_cap: 50000
+    base_url: "https://api.polygon.io/v2"
+    timeout_seconds: 5
+    retry_attempts: 3
+    backoff_base_ms: 500
+    cost_per_request_usd: 0.002           # Estimated cost for budget tracking
+    data_delay_minutes: 0                 # Real-time data
+    real_time_data: true                  # True real-time vs delayed
   
   # Halts feed configuration (Stage 2: Shadow)
   halts:

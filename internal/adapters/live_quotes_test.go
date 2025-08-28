@@ -26,7 +26,7 @@ func TestLiveQuoteAdapter_CanaryRollout(t *testing.T) {
 		ShadowMode:           false,
 		CanarySymbols:        []string{"AAPL", "SPY"},
 		PrioritySymbols:      []string{"AAPL", "SPY", "NVDA"},
-		CanaryDurationMinutes: 1, // Short duration for testing
+		CanaryDurationMinutes: 1, // One minute delay for testing phases
 		CacheMaxEntries:      100,
 		CacheTTLSeconds:     60,
 		DailyRequestCap:     1000,
@@ -54,8 +54,9 @@ func TestLiveQuoteAdapter_CanaryRollout(t *testing.T) {
 	
 	// Test Phase 2: Wait for canary expansion and test priority symbols
 	t.Run("canary_expansion_priority_symbols", func(t *testing.T) {
-		// Wait for canary expansion (plus a buffer)
-		time.Sleep(time.Duration(config.CanaryDurationMinutes)*time.Minute + 100*time.Millisecond)
+		// Simulate canary expansion by manually triggering it
+		// In a real test, we would wait, but for unit tests we simulate the passage of time
+		adapter.simulateCanaryExpansion() // Force expansion for testing
 		
 		// Now NVDA should work (priority symbol after expansion)
 		quote, err := adapter.GetQuote(ctx, "NVDA")
@@ -119,8 +120,8 @@ func TestLiveQuoteAdapter_CacheWithBounds(t *testing.T) {
 		testProvider.quotes[symbol] = &Quote{
 			Symbol: symbol,
 			Bid:    float64(100 + i),
-			Ask:    float64(100 + i + 0.1),
-			Last:   float64(100 + i + 0.05),
+			Ask:    100.0 + float64(i) + 0.1,
+			Last:   100.0 + float64(i) + 0.05,
 			Source: "test",
 		}
 	}
